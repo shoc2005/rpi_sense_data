@@ -123,7 +123,7 @@ class sensehat_sensor(threading.Thread):
                 logging.debug("fps is {:.2f}".format(counter / 10.0))
                 t1 = time.time()
                 counter = 0
-            self.exit_counter -= 1
+            # self.exit_counter -= 1
 
 class FileSaver(threading.Thread):
     # file provides saving in binary file all recorded data
@@ -178,7 +178,7 @@ class MyBuffer:
     def __init__(self, root_path):
         # class constructor
         self.stack = []
-        self.stack_size = 1500
+        self.stack_size = 25000
         self.lock = threading.Lock()
         self.file_counter = 0
         self.root_path = root_path
@@ -190,7 +190,7 @@ class MyBuffer:
                 full_stack = self.stack
                 self.stack = []
                 self.save_to_file(full_stack,  
-                                  join(self.root_path, "dump_{:d}.bin".format(self.file_counter)))
+                                  join(self.root_path, "dump_{:06d}.bin".format(self.file_counter)))
                 
     
     def save_to_file(self, data, file_name):
@@ -212,6 +212,7 @@ class camera_capture(threading.Thread):
         self.counter = counter
         self.sleep_time = sleep_time
         self.storage = storage_thread
+        logging.debug("Camera thread initialized")
 
     def run(self):
         # enter point in the Thread
@@ -229,6 +230,7 @@ class camera_capture(threading.Thread):
             camera.framerate = self.framerate
             camera.resolution = self.resolution
             camera.capture(join(self.path_to_save, 'img{:05d}.jpg'.format(self.counter)), format='jpeg', quality = 50)
+            logging.debug("Camera capture") 
             camera.close()
             self.storage.push_data({'image': self.counter, 'time': time.time()})
             time.sleep(abs(self.sleep_time - prep_time))
@@ -252,26 +254,26 @@ logging.basicConfig(level=logging.DEBUG,
                     )
 # Create new threads
 sense = sense_board()
-storage_thread = data_storage('/tmp')
+storage_thread = data_storage('/home/pi/sources/data')
 
 
 
-thread1 = sensehat_sensor(sensor_type='acc', sense=sense, storage_thread = storage_thread, exit_counter=1000)
+thread1 = sensehat_sensor(sensor_type='acc', sense=sense, storage_thread = storage_thread, exit_counter=2000)
 #thread1.setDaemon(True)
 
-thread2 = sensehat_sensor(sensor_type='gyro', sense=sense, storage_thread = storage_thread, exit_counter=1000)
+thread2 = sensehat_sensor(sensor_type='gyro', sense=sense, storage_thread = storage_thread, exit_counter=2000)
 #thread2.setDaemon(True)
 
-thread3 = sensehat_sensor(sensor_type='humi', sense=sense, storage_thread = storage_thread, exit_counter=1000)
+thread3 = sensehat_sensor(sensor_type='humi', sense=sense, storage_thread = storage_thread, exit_counter=2000)
 #thread3.setDaemon(True)
 
-thread4 = sensehat_sensor(sensor_type='pres', sense=sense, storage_thread = storage_thread, exit_counter=1000)
+thread4 = sensehat_sensor(sensor_type='pres', sense=sense, storage_thread = storage_thread, exit_counter=2000)
 #thread4.setDaemon(True)
 
-thread5 = sensehat_sensor(sensor_type='temp', sense=sense, storage_thread = storage_thread, exit_counter=1000)
+thread5 = sensehat_sensor(sensor_type='temp', sense=sense, storage_thread = storage_thread, exit_counter=2000)
 #thread5.setDaemon(True)
 
-thread6 = camera_capture(name='rpiCamera', storage_thread = storage_thread)
+thread6 = camera_capture(name='rpiCamera', storage_thread = storage_thread, path_to_save='/home/pi/sources/data/images')
 thread6.setDaemon(True)
 
 # Start new Threads
