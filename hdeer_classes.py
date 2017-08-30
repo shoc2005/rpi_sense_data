@@ -153,20 +153,20 @@ class FileSaver(threading.Thread):
             
             if item.has_key('sense_hat'):
                 if type(item['sense_hat']) is dict:
-                    bytes2write = struct.pack('<ffff', item['sense_hat']['x'], 
+                    bytes2write = struct.pack('<fffd', item['sense_hat']['x'], 
                                               item['sense_hat']['y'], 
                                             item['sense_hat']['z'], item['time'])
                     f.write(item['sense_type']+'C')
                 else:
-                    bytes2write = struct.pack('<ff', item['sense_hat'], item['time'])
+                    bytes2write = struct.pack('<fd', item['sense_hat'], item['time'])
                     f.write(item['sense_type']+'N')
                 
                 f.write(bytes2write)
+                
             elif item.has_key('image'):
                 f.write('IMAG')
-                bytes2write = struct.pack('<If', item['image'], item['time'])
-        
-        f.write(bytes2write)
+                bytes2write = struct.pack('<Id', item['image'], item['time'])
+                f.write(bytes2write)
             
         f.close()
         logging.debug("File written")
