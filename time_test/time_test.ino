@@ -2,10 +2,7 @@
 #include <TimeLib.h>
 
 #include <Time.h>
-
-#define TIME_MSG_LEN 18 // time sync to PC is HEADER followed by Unix time_t as ten ASCII digits
-#define TIME_HEADER 'TIMESYNQ' // Header tag for serial time sync message
-#define TIME_REQUEST 7 // ASCII bell character requests a time sync message
+bool maintenance = true; // default mode
 
 class Messenger { 
   // class for low-lovel sending and receiving messages within Serial port
@@ -20,7 +17,15 @@ class Messenger {
     // reads data from serial, if no data in serial after read_timeout then returns empty string
     // read_timeout in miliseconds
     Serial.setTimeout(read_timeout);
-    String line_ = Serial.readString();
+    char buffer_[100];
+    int bytes = Serial.readBytesUntil('\n', buffer_, 100);
+     
+    String line_ = "";
+    if (bytes > 0) {
+      for (int i=0; i<bytes; i++){
+        line_ += (String)buffer_[i];
+      }
+    }
 
     return line_;
   }
@@ -52,8 +57,8 @@ class Messenger {
       
     int read_timeout=5000;
     String ack_msg = read_data(read_timeout);
-    Serial.println("got answ:"+ack_msg+String(ack_msg.length()));
-    if (ack_msg == "ack\n")
+    //Serial.println("got answ:"+ack_msg+String(ack_msg.length()));
+    if (ack_msg == "ack")
       return true;
     else
       return false;
@@ -72,10 +77,13 @@ class Datetime_mini {
   bool synhronized = false;
   time_t shutdown_time = 0;
   time_t wakeup_time = 0;
+
+  
+  public:
+  
   bool shutdown_time_initialized = false;
   bool wakeup_time_initialized = false;
   
-  public:
   Datetime_mini() {
     synhronized = false;
   }
@@ -118,8 +126,8 @@ class Datetime_mini {
 
   int set_current_time(time_t time_t_value) {
     setTime(time_t_value);
-    Serial.println((String)"Time sync: "+(String)hour(time_t_value)+":"+(String)minute(time_t_value));
-    Serial.println((String) time_t_value);
+    //Serial.println((String)"Time sync: "+(String)hour(time_t_value)+":"+(String)minute(time_t_value));
+    //Serial.println((String) time_t_value);
     synhronized = true;
   }
 
@@ -132,9 +140,17 @@ class Datetime_mini {
     shutdown_time_initialized = true;
   }
 
+  time_t get_shutdown_time() {
+    return shutdown_time;
+  }
+
   void set_wakeup_time(time_t wake_time) {
     wakeup_time = wake_time;
     wakeup_time_initialized = true;
+  }
+
+  time_t get_wakeup_time() {
+    return wakeup_time;
   }
 
   bool check_to_shutdown() {
@@ -175,6 +191,23 @@ class Communicator
     int tmp = 0;
   }
 
+  int get_current_time() {
+    if (dateTime->check_sync_status()) {
+      time_t curt = now();
+      Serial.println(time_to_str(curt));
+    }
+    else
+      Serial.println("Time not synchronized!");
+  }
+  
+  String time_to_str(time_t time_) {
+    // returns the current Arduino time
+
+    String res = (String)"Year:"+(String)year(time_) + (String)" Month:"+(String)month(time_) + " Day:" + (String)day(time_) + ", " +
+      (String)hour(time_) + ":" + (String)minute(time_) + ":" + (String)second(time_);
+    return res;
+  }
+
   int check_rpi_error() {
     // check rpi has been expirienced any error
     int tmp = 0;
@@ -184,7 +217,7 @@ class Communicator
     // ask the repi for return of the next shutdown and wakeup time
     bool answ = serial_obj->send_message("trigger_time");
     if (answ) {
-      while (!dateTime->ckeck_triggers_ready()) {
+      while (!dateTime->ckeck_triggers_ready() && !maintenance) {
         check_for_data();
         delay(50);   
       }
@@ -196,8 +229,9 @@ class Communicator
   int get_rpi_time() {
     // ask the repi for return of the next shutdown and wakeup time
     bool answ = serial_obj->send_message("curr_time");
+    check_for_data();
     if (answ) {
-      while (!dateTime->check_sync_status()) {
+      while (!dateTime->check_sync_status() && !maintenance) {
         check_for_data();
         delay(50);
       }
@@ -236,15 +270,47 @@ class Communicator
     // 2 - > 25% and < 50%
     // 3 - > 50%
     // 0 - can't get data from rpi
-    int tmp = 0;
+    time_t curt;
+    String msg;
+    int a;
+    
+    for (int i = 0; i < 3; i++){
+      curt= now();
+      msg = "current_status";
+      a = serial_obj->send_message(msg);
+      if (a)
+        return 1;
+    }
+    return 0;
   }
 
   long int get_unix_time(String msg, String keyword){
     // returns unix time from from String after the keyword
     int start_index = msg.lastIndexOf(":") + 1;
     int len = msg.length();
-    Serial.println(msg.substring(start_index));
+    //Serial.println(msg.substring(start_index));
     return msg.substring(start_index).toInt();
+  }
+
+  int send_ardu_time() {
+    // sends current ardu time
+    serial_obj->send_message("ack");
+    if (dateTime->check_sync_status()) {
+      time_t curt;
+      String msg;
+      int a;
+      
+      for (int i = 0; i < 3; i++){
+        curt= now();
+        msg = "curr_time:" + (String)curt;
+        a = serial_obj->send_message(msg);
+        if (a)
+          return 1;
+      }
+
+      return 0;
+      
+    }
   }
 
   void check_for_data() {
@@ -258,6 +324,7 @@ class Communicator
     if (msg.startsWith("time_synch"))
     {
       time_t time_ = (time_t)get_unix_time(msg, "time_synch");
+      Serial.println((String)"Time sync: " + time_to_str(time_));
       dateTime->set_current_time(time_);
       serial_obj->send_message("ack");
     }
@@ -266,6 +333,7 @@ class Communicator
     if (msg.startsWith("sleep_time"))
     {
       time_t time_ = (time_t)get_unix_time(msg, "sleep_time");
+      Serial.println((String)"Shutdown Time: " + time_to_str(time_));
       dateTime->set_shutdown_time(time_);
       serial_obj->send_message("ack");
     }
@@ -274,8 +342,40 @@ class Communicator
     if (msg.startsWith("wakeup_time"))
     {
       time_t time_ = (time_t)get_unix_time(msg, "wakeup_time");
+      Serial.println((String)"Wakeup Time: " + time_to_str(time_));
       dateTime->set_wakeup_time(time_);
       serial_obj->send_message("ack");
+    }
+
+    if (msg.startsWith("curr_time")) {
+      get_current_time();
+      
+    }
+
+    if (msg.startsWith("get_ardu_time")) {
+      send_ardu_time();
+    }
+
+    if (msg.startsWith("enable_maint")) {
+      maintenance = true;
+      serial_obj->send_message("ack");
+      Serial.println("Ardu in maintenance mode");
+    }
+
+    if (msg.startsWith("disable_maint")) {
+      maintenance = false;
+      serial_obj->send_message("ack");
+      Serial.println("Ardu exit from maintenance mode");
+    }
+
+    if (msg.startsWith("status")) {
+      serial_obj->send_message("ack");
+      int ctrlState = digitalRead(3);
+      String timestr = time_to_str(now());
+      Serial.println("Maintenance=" + (String)maintenance + ", RpiPower=" + (String)ctrlState + ", TimeSynh=" + dateTime->check_sync_status() + " " + timestr);
+      Serial.println("Sleep time:(init=" + (String)dateTime->shutdown_time_initialized + ") "+ time_to_str(dateTime->get_shutdown_time()));
+      Serial.println("Wakeup time:(init=" + (String)dateTime->wakeup_time_initialized + ") "+ time_to_str(dateTime->get_wakeup_time()));
+      
     }
   }  
 };
@@ -316,27 +416,24 @@ class Pin_controller {
       // the button pressed now
       event_length = 0;
       time_push = millis();
+      while (true) {
+        delay(20);
+        buttonState = digitalRead(buttonPin); 
+        if (buttonState == HIGH &&  (millis() - time_push) >= off_delay_time) {
+          event_length = off_delay_time;
+          time_push = -1;
+          return;
+        }
+        if (buttonState == LOW) {
+          event_length = millis() - time_push;
+          time_push = -1;
+          return;          
+        }
+      }
+      delay(10);
       return;
     }
 
-    if (time_push > 0) {
-      // button has been pressed
-
-      // check maximal time for hold
-      if ((millis() - time_push) >= off_delay_time) {
-        // shutdown rpi after 5 second than button has been pressed
-        event_length = off_delay_time;
-        time_push = -1;
-        return;
-      }
-      
-      if (controlState == LOW) {
-        event_length = millis() - time_push;
-        time_push = -1;
-        return;
-      }
-
-    }
   }
 
   bool check_button_pressed() {
@@ -354,14 +451,24 @@ class Pin_controller {
     // 3 - turn on RPI
 
     if (check_button_pressed()) {
-      controlState = digitalRead(controlPin);
+      controlState = digitalRead(controlPin); //rpi is powered
       if (controlState == HIGH) {
-        if (event_length >= off_delay_time) 
+        if (event_length >= off_delay_time) {
+          event_length = 0;
+          time_push = -1;
           return 2;
+        }
         else
-          return 1;
+          {
+            event_length = 0;
+            time_push = -1;
+            return 1;
+          }
+          
       }
       else {
+        event_length = 0;
+        time_push = -1;
         return 3;
       }
     }
@@ -384,7 +491,7 @@ class Pin_controller {
     controlState = digitalRead(controlPin);
     if (controlState == HIGH) {
       digitalWrite(controlPin, LOW);
-       beep(500);
+       //beep(500);
     }
   }
 
@@ -415,7 +522,7 @@ Communicator *serial_communicator;
 Pin_controller * pin_contr; 
 
 
-bool maintenance = true; // default mode
+
 
 
 String serial_msg;
@@ -427,14 +534,22 @@ void check_button_pressed_() {
   int button = pin_contr->check_button_type();
   if (button == 2) {
     // shutdown the rpi
+    Serial.println("Rpi shutdown with Button");
     int sh_result = serial_communicator->send_rpi_shutdown();
     if (sh_result > 0) {
-      Serial.println("Rpi shutdown successfull");
+      pin_contr->beep(200);
       ardu_time->shutdown_done();
+      Serial.println("Waiting 60 secs");
+      time_t tt = now();
+      while (now() - tt <= 60) {
+        serial_communicator->check_for_data();
+        delay(100);
+      }
       pin_contr->power_off_rpi();
       pin_contr->beep(200);
       delay(200);
       pin_contr->beep(200);
+      Serial.println("Rpi shutdown successfull");
     }
     else
       Serial.println("Rpi shutdown fails");
@@ -442,13 +557,17 @@ void check_button_pressed_() {
 
   if (button == 3) {
     // turnon the rpi
+    if (!maintenance) {
+      ardu_time->wakeup_done();
+    
+    }
     pin_contr->power_on_rpi();
     pin_contr->beep(200);
-    Serial.println("Rpi turned on");
+    Serial.println("Rpi turned on with button");
   }
 
   if (button == 1) {
-    serial_communicator->check_rpi_status();
+    serial_communicator->check_rpi_space_available();
   }  
 }
 
@@ -463,7 +582,7 @@ void setup() {
 }
 
 void loop() {
-
+  
   check_button_pressed_();
   serial_communicator->check_for_data();
   
@@ -472,49 +591,56 @@ void loop() {
     delay(50);
     //continue;
   }
-
-  if (ardu_time->check_sync_status()) {
-    // the arduino is not in maintenance mode and time is synchronized
-
-    if (ardu_time->check_triggers()) {
-      // all time triggers are initialized (shutdown and wakeup time)
-
-      // check shutdown time (rpi sleep time)
-      if (ardu_time->check_to_shutdown()) {
-
-        // shutdown rpi and wait 60 sec until rpi shutdown
-        int sh_result = serial_communicator->send_rpi_shutdown();
-        if (sh_result > 0) {
-          pin_contr->power_off_rpi();
-          ardu_time->shutdown_done();
-          time_t tt = now();
-          Serial.println("Shutdown successfull"+(String)hour(tt)+":"+(String)minute(tt));
+  else {
+    if (ardu_time->check_sync_status()) {
+      // the arduino is not in maintenance mode and time is synchronized
+  
+      if (ardu_time->check_triggers()) {
+        // all time triggers are initialized (shutdown and wakeup time)
+  
+        // check shutdown time (rpi sleep time)
+        if (ardu_time->check_to_shutdown()) {
+  
+          // shutdown rpi and wait 60 sec until rpi shutdown
+          int sh_result = serial_communicator->send_rpi_shutdown();
+          if (sh_result > 0) {
+            Serial.println("Waiting 60 secs");
+            time_t t1 = now();
+            while (now() - t1 <= 60) {
+              serial_communicator->check_for_data();
+              delay(100);
+            }
+            pin_contr->power_off_rpi();
+            ardu_time->shutdown_done();
+            time_t tt = now();
+            Serial.println("Shutdown successfull " + serial_communicator->time_to_str(tt));
+          }
+          else
+            //Serial.println("Shutdown fails");
+          delay(50);
+          
         }
-        else
-          //Serial.println("Shutdown fails");
-        delay(50);
-        
+  
+        // check wakeup time (rpi wakeup time)
+        if (ardu_time->check_to_wakeup()) {
+          ardu_time->wakeup_done();
+          pin_contr->power_on_rpi();
+          time_t tt = now();
+          Serial.println("Rpi turned on " + serial_communicator->time_to_str(tt));
+          
+        }
       }
-
-      // check wakeup time (rpi wakeup time)
-      if (ardu_time->check_to_wakeup()) {
-        ardu_time->wakeup_done();
-        pin_contr->power_on_rpi();
-        time_t tt = now();
-        Serial.println("Rpi turned on"+(String)hour(tt)+":"+(String)minute(tt));
-        
+      else // if triggers are not initialized
+      {
+        serial_communicator->get_time_triggers();
+        delay(50);
       }
     }
-    else // if triggers are not initialized
+    else // if time is not synchronized
     {
-      serial_communicator->get_time_triggers();
+      serial_communicator->get_rpi_time(); // request for time synhronization from rpi
       delay(50);
     }
-  }
-  else // if time is not synchronized
-  {
-    serial_communicator->get_rpi_time(); // request for time synhronization from rpi
-  }
-  
+  }  
 
 }
