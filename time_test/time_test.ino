@@ -94,6 +94,10 @@ class Datetime_mini {
     wakeup_time_initialized = false;
   }
 
+  void reset_time() {
+    synhronized = false;
+  }
+
   bool ckeck_triggers_ready() {
     // # check time is synchronized and both triggers ready
     if  ((shutdown_time_initialized &&  wakeup_time_initialized) && synhronized)
@@ -192,6 +196,7 @@ class Communicator
   }
 
   int get_current_time() {
+    serial_obj->send_message("ack");
     if (dateTime->check_sync_status()) {
       time_t curt = now();
       Serial.println(time_to_str(curt));
@@ -250,6 +255,13 @@ class Communicator
     else
       return 0;
       
+  }
+
+  int reset_ardu() {
+    // reset ardu: time and triggers
+    serial_obj->send_message("ack");
+    dateTime->reset_triggers();
+    dateTime->reset_time();
   }
 
   int get_next_shutdown() {
@@ -376,6 +388,10 @@ class Communicator
       Serial.println("Sleep time:(init=" + (String)dateTime->shutdown_time_initialized + ") "+ time_to_str(dateTime->get_shutdown_time()));
       Serial.println("Wakeup time:(init=" + (String)dateTime->wakeup_time_initialized + ") "+ time_to_str(dateTime->get_wakeup_time()));
       
+    }
+
+    if (msg.startsWith("reset")) {
+      reset_ardu();
     }
   }  
 };
