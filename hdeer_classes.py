@@ -2,9 +2,6 @@
 """
 HungryDeer
 
-script contains classes for the Sense Hat data gathering using Threading,
-communication between rpi and arduino (rpi side), events logging class, etc.
-
 """
 
 import threading
@@ -22,28 +19,50 @@ from os.path import exists
 import datetime
 import pyserial as ps
 import socket
+import os
+import shutil
 
+#class Sense_board(SenseHat):
+#    # inherition of SenseHat for measuring concurent reading
+#
+#    def __init__(self):
+#        # class constructor
+#        SenseHat.__init__(self)
+#        self.lock = threading.Lock()
+#    
+#    def get_measurment(self, m_type):
+#        # get sensor's values
+#        self.lock.acquire()
+#        try:
+#            t1 = time.time()
+#            sensor_values = m_type()
+#        finally:
+#            self.lock.release()                
+#        return t1, sensor_values
 
-
-class sense_board(SenseHat):
-    # inherition of SenseHat for measuring concurent reading
-
-    def __init__(self):
-        # class constructor
-        SenseHat.__init__(self)
-        self.lock = threading.Lock()
+class MyThread:
     
-    def get_measurment(self, m_type):
-        # get sensor's values
-        self.lock.acquire()
-        try:
-            t1 = time.time()
-            sensor_values = m_type()
-        finally:
-            self.lock.release()                
-        return t1, sensor_values
+    def __init__(self):
+        self.stop = False
+        self.pause = False
+    
+    def stop(self):
+        self.stop = True
+    
+    def stopped(self):
+        return self.stop
+    
+    def pause(self):
+        self.pause = True
+    
+    def paused(self):
+        return self.pause
+    
+    def reset_pause(self):
+        self.pause = False
+    
 
-class sensehat_sensor(threading.Thread):
+class Sensehat_sensor(threading.Thread, MyThread):
     # class for SenseHat data reading using Threading
 
     def __init__(self, sensor_type, sense, storage_thread, raw=True, exit_counter=500, frequency='max'):
@@ -61,6 +80,7 @@ class sensehat_sensor(threading.Thread):
         self.lock = threading.Lock()
         self.exit_counter = exit_counter
         self.storage = storage_thread
+        self.paused = False
         
         if frequency == 'max':
             self.read_wait_time = 1.0/1000
@@ -125,6 +145,7 @@ class sensehat_sensor(threading.Thread):
             self.type_name = 'BTN'
             self.measure = sense.get_temperature
             logging.debug("Using board sensor, measurement degrees in Celsius")
+    
 
     def run(self):
         # enter point in the Thread
@@ -139,6 +160,14 @@ class sensehat_sensor(threading.Thread):
         counter = 0
         
         while self.exit_counter > 0:
+            if self.stopped():
+                break
+            
+            if self.paused():
+                time.sleep(0.5)
+                continue
+
+            
             val_time, sensor_values = self.sense.get_measurment(self.measure)
             self.storage.push_data({'sense_hat':sensor_values, 'sense_type': self.type_name, 'time': val_time})
 #            logging.debug("{:f} - {:s}".format(time.time(), str(sensor_values)))
@@ -212,6 +241,7 @@ class Shell_executer:
         return out, err
     
     def get_memory_available(self, mount_point='/'):
+        # returns mount point's available bytes % of usage
         
         out, err = self.run('df -a')
         
@@ -227,24 +257,54 @@ class Shell_executer:
                 if field == '':
                     continue
                 fields.append(field)
-            if fields[5] == mount_point:
-                return int(data[3]), data[4]
+            if fields[5] == mount_point and fields[4][:-1] != '':
+                return int(fields[3]), fields[4][:-1]
             
         return None
     
+    def get_system_time_epoch(self):
+        # returns current UTC time in seconds since 1970-01-01 00:00:00 UTC
+        out, err = self.run('date +%s')
+        
+        if len(err) > 0:
+            return None
+        
+        return long(out)
+    
+    def set_system_time(self, time_epoch):
+        # set current time globally in the system
+        curr_path = os.path.dirname(os.path.realpath(__file__))
+        out, err = self.run('sudo {:s} {:d}'.format(join(curr_path, 'run_in_shell.sh'), time_epoch))
+        
+        if len(err) > 0:
+            return False
+        
+        return True
+    
+    def shutdown(self):
+        # shutdown RPI
+        out, err = self.run('sudo run_in_shell.sh shutdown')
+        
+        if len(err) > 0:
+            return False
+        
+        return True
+        
+        
+    
                 
-class Comminicator(threading.Thread):
+class Comminicator(threading.Thread, MyThread):
     # class for communication with Ardu and Host computer
     
     rpi_ip = '127.0.0.1'
     port = '5500'
     buffer_size = 1024
     socket = None
-    ser = None
+    serial = None
     
     
     
-    def __init__(self, usb_port='/dev/ardu', baudr=9600, usb_timeout=1.0):
+    def __init__(self, storage, usb_port='/dev/ardu', baudr=9600, usb_timeout=1.0, sense_threads = None):
         # class's constructor
 
         threading.Thread.__init__(self)
@@ -257,8 +317,17 @@ class Comminicator(threading.Thread):
         self.conn = None
         
         # init USB connection with the Arduino
-        self.ser = ps.init(port=usb_port, baudrate=baudr, timeout=usb_timeout)
-        self.ser = ps.open()
+        self.serial = ps.init(port=usb_port, baudrate=baudr, timeout=usb_timeout)
+        self.serial.open()
+        
+        self.ardu_maint_mode = True
+        self.rpi_maint_mode = True
+        
+        self.time_synchronized = False
+        
+        self.sense_threads = sense_threads
+        self.shell = Shell_executer()
+        self.storage = storage
 
     
     def usb_port_listener(self):
@@ -270,15 +339,34 @@ class Comminicator(threading.Thread):
         pass
     
     def set_current_time(self, time):
-        # set current time for RPi from Ardu
-        pass
+        # set current time (time epoch) for RPi from Ardu or Host
+        
+        res = self.shell.set_system_time(time)
+        if res:
+            self.time_synchronized = True
+        return res
+    
+    def turnoff_rpi_power(self, after_seconds=60):
+        # send message to the ardu for waiting N seconds and then powering off the RPI
+        
+        return self.send_message('turn_off_rpi:{:d}'.format(60))
     
     def get_current_time(self, epoch=True):
         # get current time from RPI
-        pass
+        
+        if self.time_synchronized:
+            if epoch:
+                time_epoch = self.shell.get_system_time_epoch()
+                res = self.send_message('time_synch:{:d}'.format(time_epoch))
+                return res
+            else:
+                return False
     
     def send_sleep_time(self):
         # from calendar get current/next sleeping time for the Ardu
+       
+        
+        
         pass
     
     def send_wakeup_time(self):
@@ -287,11 +375,36 @@ class Comminicator(threading.Thread):
     
     def set_ardu_mode(self, mode = 'maint'):
         # set Ardu working mode: 'maint' - maintenance True or False
-        pass
+        
+        if mode == 'maint':
+            msg = 'enable_maint'
+        else:
+            msg = 'disable_maint'
+            
+        res = self.send_message(msg)
+        
+        # return True if the message was sent, overwise False
+        return res
     
-    def shutdown_rpi(self):
+    def shutdown_rpi(self, force=False):
         # stops all threads and shutdown Rpi
-        pass
+        
+        if not force:                
+            self.send_wakeup_time()
+            self.set_ardu_mode(mode='run')
+            self.turnoff_rpi_power()
+
+        # stop all senses threads
+        for sense_thread in self.sense_threads:
+            sense_thread.stop()
+            while not sense_thread.stopped():
+                time.sleep(0.05)
+        
+        self.conn.close()
+        self.shell.shutdown()
+        
+        
+        
     
     def check_ardu_status(self):
         # check current status of the Ardu
@@ -299,11 +412,53 @@ class Comminicator(threading.Thread):
     
     def check_space_avalable(self, led_on=True):
         # check space avalabale on Rpi
-        pass
+        bytes_, _ = self.shell.get_memory_available()
+        self.send_message(str(bytes_), usb_type=False, ack_need=False)
     
-    def send_message(self, message, usb_type=True):
+    def send_message(self, message, usb_type=True, ack_need=True):
         # send message to the Ardu
-        pass
+        
+        if usb_type:
+            if self.serial is None:
+                logging.debug("Error: No USB connection with Ardu!")
+                return False
+            bytes_ = self.serial.write(message + '\n')
+        else:
+            if self.conn is None:
+                logging.debug("Error: No TCP connection with Host!")
+                return False
+            bytes_ = self.conn.send(message + '\n')            
+            
+            
+        if ack_need:
+            
+            # init try counter
+            n = 1
+            
+            # try to send message            
+            while n <= 3: # try 3 times
+            
+                # USB or TCP processing
+                if usb_type:
+                    answ = self.read_usb_data()
+                else:
+                    answ = self.read_tcp_data()
+                    
+                if answ == 'ack':
+                    return True
+                
+                # sleep
+                time.sleep(0.5)
+                
+                n += 1
+            
+            return False # if no 'ack' recieved during 3 trials
+        else: # counts bytes sent
+            if bytes_ == len(message) + 1:
+                return True
+            else:
+                return False
+
     
     def reset_arduino(self):
         # reset arduino
@@ -311,11 +466,46 @@ class Comminicator(threading.Thread):
     
     def clear_rpi(self):
         # clear rpi camera's frames and log files
-        pass
+        
+        if self.rpi_maint_mode:
+            return self.storage.delete_all_data()
+        else:
+            return False
     
     def set_maint_mode(self, maint=True):
-        # enabling maint mode for the rpi
-        pass
+        # enabling/disabling maint mode for the rpi and Ardu
+        
+        if maint:
+            # set Ardu
+            res = self.set_ardu_mode('maint')
+            if res:
+                self.ardu_maint_mode = True
+                self.time_synchronized = False
+            
+                # pause sensing threads on the rpi
+                for sense_thread in self.sense_threads:
+                    sense_thread.pause()
+                    while not sense_thread.paused():
+                        time.sleep(0.05)
+                        
+                return True
+            return False
+                    
+        else:
+            # synh time from the host
+            if self.rpi_maint_mode and self.time_synchronized:
+            
+                # disable Ardu maint mode
+                res = self.set_ardu_mode('run')
+                if res:
+                    self.ardu_maint_mode = False
+                
+                    # start sensing threads on the rpi
+                    for sense_thread in self.sense_threads:
+                        sense_thread.paused = False
+                    return True
+                return False
+            
         
     def read_tcp_data(self):
         # reads data from the TCP port
@@ -390,7 +580,7 @@ class Comminicator(threading.Thread):
                 
                 if usb_line.find('curr_time') == 0 and len(usb_line) > 11:
                     self.send_message('ack')
-                    self.set_current_time(usb_line[11:])
+                    self.set_current_time(long(usb_line[10:]))
             
             # read TCP data
             if self.listen_tcp_client():
@@ -403,11 +593,16 @@ class Comminicator(threading.Thread):
                     
                     # synch time from the host computer
                     if tcp_data.find("time_synch") >=0:
-                        self.self.set_current_time(tcp_data.find("time_synch"))
+                        time_epoch = long(tcp_data[tcp_data.find("time_synch") + 12:])
+                        time_set_res = self.set_current_time(time_epoch)
+
+                        if time_set_res:
+                            self.send_message('ack', usb_type=False, ack_need=False)
                     
                     # delete all frames and log files
                     if tcp_data == 'clean_rpi':
                         self.clear_rpi()
+                        self.send_message('ack', usb_type=False, ack_need=False)
                         
                     # get available space on rpi SD
                     if tcp_data == 'memory':
@@ -415,20 +610,28 @@ class Comminicator(threading.Thread):
                     
                     # shutdown rpi 
                     if tcp_data == 'shutdown':
-                        self.shutdown_rpi()
+                        self.send_message('ack', usb_type=False, ack_need=False)
+                        self.shutdown_rpi(force=True)
                         
                     # enable maintenance mode for the rpi
                     if tcp_data == 'enable_maint':
-                        self.set_maint_mode(True)
-                    
+                        res = self.set_maint_mode(True)
+                        if res:
+                            self.send_message('ack', usb_type=False, ack_need=False)
+                        
                     # disable maintenance mode for the rpi
                     if tcp_data == 'disable_maint':
-                        self.set_maint_mode(False)
+                        res = self.set_maint_mode(False)
+                        if res:
+                            self.send_message('ack', usb_type=False, ack_need=False)
+                        
 
                     # disable maintenance mode for the rpi and shutdown rpi
                     if tcp_data == 'disable_maint&shutdown':
-                        self.set_maint_mode(False)
-                        self.shutdown_rpi()
+                        res = self.set_maint_mode(False)
+                        if res:
+                            self.send_message('ack', usb_type=False, ack_need=False)
+                            self.shutdown_rpi()
                         
                     
                     
@@ -449,12 +652,16 @@ class Comminicator(threading.Thread):
     def run(self):
         # run thread
         logging.debug("Starting")
-        self.get_messages()
+        while True:
+            if self.stopped():
+                break
+            self.get_messages()
+            
         self.ser.close()
         if self.conn is not None:
             self.conn.close()
         logging.debug("Exiting")
-        pass
+        
     
     def clear_rpi_data(self):
         # delete all RPI gathered data form SD disk
@@ -525,7 +732,7 @@ class MyBuffer:
         new_thread.start()
         new_thread.join()
         
-class camera_capture(threading.Thread):
+class Camera_capture(threading.Thread, MyThread):
     # class for camera capturing into jpg files
     def __init__(self, name, storage_thread, path_to_save='/tmp', counter=0, 
                  framerate=12, resolution=(640, 420), sleep_time=15.0):
@@ -539,6 +746,7 @@ class camera_capture(threading.Thread):
         self.sleep_time = sleep_time
         self.storage = storage_thread
         logging.debug("Camera thread initialized")
+        self.paused = False
         
 
     def run(self):
@@ -556,6 +764,12 @@ class camera_capture(threading.Thread):
         prep_time = 2.0
         
         while True:
+            if self.stopped():
+                break
+            if self.paused():
+                time.sleep(0.5)
+                continue
+            
             camera = PiCamera()
             time.sleep(prep_time)
             camera.framerate = self.framerate
@@ -568,7 +782,7 @@ class camera_capture(threading.Thread):
             self.counter += 1
         
 
-class data_storage():
+class Data_storage():
     # class for data gathering from different sensors and saving in files
     
     def __init__(self, path_root):
@@ -578,50 +792,35 @@ class data_storage():
     def push_data(self, data):
         # push data dictionary in the buffer
         self.buffer.push_value(data)
-
-
-# set debug output format
-logging.basicConfig(level=logging.DEBUG,
-                    format='(%(threadName)-10s) %(message)s',
-                    )
-# Create new threads
-sense = sense_board()
-storage_thread = data_storage('/home/pi/sources/data')
-
-
-
-thread1 = sensehat_sensor(sensor_type='acc', sense=sense, storage_thread = storage_thread, exit_counter=2000, frequency='max')
-#thread1.setDaemon(True)
-
-thread2 = sensehat_sensor(sensor_type='gyro', sense=sense, storage_thread = storage_thread, exit_counter=2000, frequency='max')
-#thread2.setDaemon(True)
-
-thread3 = sensehat_sensor(sensor_type='humi', sense=sense, storage_thread = storage_thread, exit_counter=2000, frequency=-60.0)
-#thread3.setDaemon(True)
-
-thread4 = sensehat_sensor(sensor_type='pres', sense=sense, storage_thread = storage_thread, exit_counter=2000, frequency=-60.0)
-#thread4.setDaemon(True)
-
-thread5 = sensehat_sensor(sensor_type='temp', sense=sense, storage_thread = storage_thread, exit_counter=2000, frequency=-60.0)
-#thread5.setDaemon(True)
-
-thread6 = camera_capture(name='rpiCamera', storage_thread = storage_thread, path_to_save=join(storage_thread.dump_path, 'images'),
-                         sleep_time=12.0)
-thread6.setDaemon(True)
-
-# Start new Threads
-thread1.start()
-thread2.start()
-thread3.start()
-thread4.start()
-thread5.start()
-thread6.start()
-
-main_thread = threading.currentThread()
-for t in threading.enumerate():
-    if t is main_thread or t.getName() == 'rpiCamera':
-        continue
-    logging.debug('joining %s', t.getName())
-    t.join()
-#thread1.join(14.5)
-#thread2.join()
+        
+    def delete_all_data(self, data):
+        # delete all files in the Rpi data storage
+        
+        # delete all items from a root path
+        all_items = [item for item in listdir(self.buffer.root_path)]
+        try:
+            for item_ in all_items:
+                # delete item
+                if isdir(item_):
+                    shutil.rmtree(item_)
+                else:
+                    os.remove(item_)
+        except:
+            logging.debug("Error in log files deletion.")
+            return False
+        
+        return True
+        
+class Calendar():
+    # class for sleep and wakeup time management
+    
+    def __inti__(self):
+        pass
+    
+    def get_sleep_time(self):
+        pass
+    
+    def get_wakeup_time(self):
+        pass
+    
+    
