@@ -8,6 +8,7 @@ communication between rpi and arduino (rpi side), events logging class, etc.
 """
 
 import threading
+import subprocess
 import time
 from sense_hat import SenseHat
 import logging
@@ -19,6 +20,8 @@ from os.path import isdir
 from os import makedirs
 from os.path import exists
 import datetime
+import pyserial as ps
+import socket
 
 
 
@@ -192,8 +195,274 @@ class FileSaver(threading.Thread):
             
         f.close()
         logging.debug("File written")
-                
 
+class Shell_executer:
+    # class fro shell commands execution
+    
+    def __init__(self):
+        # class's constructor
+        pass
+    
+    def run(self, cmd):
+        # run command and wait exit status
+        args_list = cmd.split(' ')
+        p = subprocess.Popen(args_list, stdout=subprocess.PIPE, 
+                                   stderr=subprocess.PIPE)
+        out, err = p.communicate()
+        return out, err
+    
+    def get_memory_available(self, mount_point='/'):
+        
+        out, err = self.run('df -a')
+        
+        if len(err) > 0:
+            return None
+        
+        out_lines = out.split('\n')
+        
+        for line in out_lines[1:-1]:
+            data = line.split(' ')
+            fields = []
+            for field in data:
+                if field == '':
+                    continue
+                fields.append(field)
+            if fields[5] == mount_point:
+                return int(data[3]), data[4]
+            
+        return None
+    
+                
+class Comminicator(threading.Thread):
+    # class for communication with Ardu and Host computer
+    
+    rpi_ip = '127.0.0.1'
+    port = '5500'
+    buffer_size = 1024
+    socket = None
+    ser = None
+    
+    
+    
+    def __init__(self, usb_port='/dev/ardu', baudr=9600, usb_timeout=1.0):
+        # class's constructor
+
+        threading.Thread.__init__(self)
+        self.name = 'Communicator'
+        
+        # init TCP/IP local server
+        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.socket.bind((self.rpi_ip, self.port))
+        self.socket.settimeout(0.1)
+        self.conn = None
+        
+        # init USB connection with the Arduino
+        self.ser = ps.init(port=usb_port, baudrate=baudr, timeout=usb_timeout)
+        self.ser = ps.open()
+
+    
+    def usb_port_listener(self):
+        # listen usb port for messages from the Ardu
+        pass
+    
+    def tcp_ip_listener(self):
+        # listen TCP connection messages from the host computer
+        pass
+    
+    def set_current_time(self, time):
+        # set current time for RPi from Ardu
+        pass
+    
+    def get_current_time(self, epoch=True):
+        # get current time from RPI
+        pass
+    
+    def send_sleep_time(self):
+        # from calendar get current/next sleeping time for the Ardu
+        pass
+    
+    def send_wakeup_time(self):
+        # from calendar get current/next wakeup time for the Ardu
+        pass
+    
+    def set_ardu_mode(self, mode = 'maint'):
+        # set Ardu working mode: 'maint' - maintenance True or False
+        pass
+    
+    def shutdown_rpi(self):
+        # stops all threads and shutdown Rpi
+        pass
+    
+    def check_ardu_status(self):
+        # check current status of the Ardu
+        pass
+    
+    def check_space_avalable(self, led_on=True):
+        # check space avalabale on Rpi
+        pass
+    
+    def send_message(self, message, usb_type=True):
+        # send message to the Ardu
+        pass
+    
+    def reset_arduino(self):
+        # reset arduino
+        pass
+    
+    def clear_rpi(self):
+        # clear rpi camera's frames and log files
+        pass
+    
+    def set_maint_mode(self, maint=True):
+        # enabling maint mode for the rpi
+        pass
+        
+    def read_tcp_data(self):
+        # reads data from the TCP port
+        
+        try:        
+            data = self.conn.recv(1024)
+            if not data:
+                return None
+        except socket.timeout as e_time_out:
+            return None
+        
+        # ignore \n or \r symbols
+        line = ''
+        for byte in data:
+            if not(ord(byte) == 13 or ord(byte) == 10):
+                line += byte
+            else:
+                return line
+        
+        return line
+        
+    
+    def listen_tcp_client(self):
+        # listen for client on port
+        
+        if self.conn is None:
+            try:
+                self.conn, addr = self.accept()
+                logging.debug("Connected with TCP client from {:s} adress.".format(addr))
+            except socket.timeout as e:
+                return False
+        else:
+            return True
+    
+    def read_usb_data(self):
+        # reads data from the usb port
+        
+        usb_data = ''
+
+        while self.ser.in_waiting() > 0:
+            byte_ = self.ser.read(1)
+            if byte_ == '\n':
+                break
+            else:
+                usb_data += byte_
+        
+        return usb_data
+    
+    def get_messages(self):
+        # get messages from the USB or TCP port and switch data flow
+        
+        while True:
+            # read USB data
+            usb_line = self.read_usb_data()
+            if len(usb_line) > 0:
+                
+                # send RPI time to Ardu
+                if usb_line == 'curr_time':
+                    self.send_message('ack')
+                    self.get_current_time()
+                    
+                if usb_line == 'trigger_time':
+                    self.send_message('ack')
+                    self.send_sleep_time()
+                    time.sleep(0.1)
+                    self.send_wakeup_time()
+                    time.sleep(0.1)
+                    
+                if usb_line == 'shutdown':
+                    self.send_message('ack')
+                    self.shutdown_rpi()
+                
+                if usb_line.find('curr_time') == 0 and len(usb_line) > 11:
+                    self.send_message('ack')
+                    self.set_current_time(usb_line[11:])
+            
+            # read TCP data
+            if self.listen_tcp_client():
+                tcp_data = self.read_tcp_data()
+                
+                if tcp_data is not None:
+                    # close connection by the client request
+                    if tcp_data == 'logout':
+                        self.conn.close()
+                    
+                    # synch time from the host computer
+                    if tcp_data.find("time_synch") >=0:
+                        self.self.set_current_time(tcp_data.find("time_synch"))
+                    
+                    # delete all frames and log files
+                    if tcp_data == 'clean_rpi':
+                        self.clear_rpi()
+                        
+                    # get available space on rpi SD
+                    if tcp_data == 'memory':
+                        self.check_space_avalable()
+                    
+                    # shutdown rpi 
+                    if tcp_data == 'shutdown':
+                        self.shutdown_rpi()
+                        
+                    # enable maintenance mode for the rpi
+                    if tcp_data == 'enable_maint':
+                        self.set_maint_mode(True)
+                    
+                    # disable maintenance mode for the rpi
+                    if tcp_data == 'disable_maint':
+                        self.set_maint_mode(False)
+
+                    # disable maintenance mode for the rpi and shutdown rpi
+                    if tcp_data == 'disable_maint&shutdown':
+                        self.set_maint_mode(False)
+                        self.shutdown_rpi()
+                        
+                    
+                    
+                
+                    
+        
+    
+    def push_rpi_data(self):
+        # push all rpi data to the host computer using SCP or TCP client-server arch
+        
+        
+        # send message
+        # ...
+                
+        self.socket.close()
+        pass
+        
+    def run(self):
+        # run thread
+        logging.debug("Starting")
+        self.get_messages()
+        self.ser.close()
+        if self.conn is not None:
+            self.conn.close()
+        logging.debug("Exiting")
+        pass
+    
+    def clear_rpi_data(self):
+        # delete all RPI gathered data form SD disk
+        pass
+    
+    
+        
+    
 
 class MyBuffer:
     # class for parallel writing in buffer from threads
