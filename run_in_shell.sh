@@ -5,8 +5,11 @@
 # sudo chown root:root script_name.sh
 # sudo chmod 700 script_name.sh
 
+# use visudo tool and put line in below after the line %sudo ALL...
+# pi ALL=NOPASSWD: /home/pi/hdeer/run_in_shell.sh
+
 if [ $1 -eq $1 2> /dev/null ]; then
 	date -s @$1
 else
-	init 0
+     init 0
 fi

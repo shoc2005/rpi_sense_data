@@ -396,8 +396,8 @@ class Communicator
   int get_rpi_time() {
     // ask the repi for return of the next shutdown and wakeup time
     bool answ = serial_obj->send_message("curr_time");
-    delay(50);
-    check_for_data();
+    //delay(50);
+    //check_for_data();
     if (answ) {
       while (!dateTime->check_sync_status() && !maintenance) {
         check_for_data();
@@ -632,13 +632,17 @@ void check_button_pressed_() {
 
 void setup() {
   
-   Serial.begin(9600);
+   
    msg = new Messenger();
    ardu_time = new Datetime_mini();
    pin_contr = new Pin_controller();
    pin_contr->init_pins();
 
    serial_communicator = new Communicator(ardu_time, pin_contr);
+   Serial.begin(9600);
+   pin_contr->beep(200);
+   delay(50);
+   pin_contr->beep(200);
 }
 
 void loop() {
@@ -694,13 +698,13 @@ void loop() {
       else // if triggers are not initialized
       {
         serial_communicator->get_time_triggers();
-        //delay(50);
+        delay(50);
       }
     }
     else // if time is not synchronized
     {
       serial_communicator->get_rpi_time(); // request for time synhronization from rpi
-      //delay(50);
+      delay(50);
     }
   }  
 

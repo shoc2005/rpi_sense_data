@@ -34,11 +34,12 @@ thread4 = hdc.Sensehat_sensor(sensor_type='pres', sense=sense, storage_thread = 
 thread5 = hdc.Sensehat_sensor(sensor_type='temp', sense=sense, storage_thread = storage_thread, exit_counter=2000, frequency=-60.0)
 #thread5.setDaemon(True)
 
-thread6 = hdc.Camera_capture(name='rpiCamera', storage_thread = storage_thread, path_to_save=join(storage_thread.dump_path, 'images'),
+thread6 = hdc.Camera_capture(name='rpiCamera', storage_thread = storage_thread, path_to_save=hdc.join(storage_thread.dump_path, 'images'),
                          sleep_time=12.0)
 #thread6.setDaemon(True)
 
-thread7 = hdc.Comminicator(sense_threads = [thread1, thread2, thread3, thread4, thread5, thread6])
+thread7 = hdc.Comminicator(storage_thread, sense_threads = [thread1, thread2, thread3, thread4, thread5, thread6])
+thread7.setDaemon(True)
 
 # Start new Threads
 thread1.start()
