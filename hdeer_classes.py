@@ -21,7 +21,7 @@ import serial as ps
 import socket as sc
 import os
 import shutil
-import termios
+import random
 
 class Sense_board(SenseHat):
     # inherition of SenseHat for measuring concurent reading
@@ -34,12 +34,17 @@ class Sense_board(SenseHat):
     
     def get_measurment(self, m_type):
         # get sensor's values
+#        logging.debug("Waiting get_measurement")
         self.lock.acquire()
+        
         try:
+            
             t1 = time.time()
             sensor_values = m_type()
+#            logging.debug("Acquired get_measurement")
         finally:
-            self.lock.release()                
+            self.lock.release()
+#            logging.debug("Released get_measurement")
         return t1, sensor_values
 
 class MyThread(object):
@@ -47,26 +52,29 @@ class MyThread(object):
     def __init__(self):
         super(MyThread, self).__init__()
         self.stop_ = False
-        self.pause_ = False
+        self.pause_ = True
 #        logging.debug("MyThread")
     
-    def m_stop(self):
+    def m_stop(self, name='self'):
         self.stop_ = True
+        logging.debug("Stopped for {:s}".format(name))
     
     def m_stopped(self):
         
-        if self.stop_:
-            logging.debug("Stopped")
+#        if self.stop_:
+#            logging.debug("Stopped")
         return self.stop_
     
-    def m_pause(self):
+    def m_pause(self, name='self'):
         self.pause_ = True
+        logging.debug("Paused for {:s}".format(name))
     
     def m_paused(self):
         return self.pause_
     
-    def m_reset_pause(self):
+    def m_reset_pause(self, name='self'):
         self.pause_ = False
+        logging.debug("Resumed for {:s}".format(name))
     
 
 class Sensehat_sensor(MyThread, threading.Thread):
@@ -90,6 +98,8 @@ class Sensehat_sensor(MyThread, threading.Thread):
         self.exit_counter = exit_counter
         self.storage = storage_thread
         self.paused = False
+        self.t1 = time.time()
+        self.counter = 0
         
         if frequency == 'max':
             self.read_wait_time = 1.0/1000
@@ -158,35 +168,48 @@ class Sensehat_sensor(MyThread, threading.Thread):
 
     def run(self):
         # enter point in the Thread
-        logging.debug("Starting")
+        if self.m_paused():
+            logging.debug("Starting in paused mode")
+        else:
+            logging.debug("Starting")
+            
         self.read_value()
         logging.debug("Exiting")
         logging.debug("is deamon {:b}".format(self.isDaemon()))
     
     def read_value(self):
         # reads the sensor value from the SenseHat method
-        t1 = time.time()
-        counter = 0
+        self.t1 = time.time()
+        self.counter = 0
         
         while self.exit_counter > 0:
             if self.m_stopped():
                 break
             
             if self.m_paused():
-                time.sleep(0.5)
+                r = random.random()
+                time.sleep(r)
                 continue
 
             
             val_time, sensor_values = self.sense.get_measurment(self.measure)
             self.storage.push_data({'sense_hat':sensor_values, 'sense_type': self.type_name, 'time': val_time})
+#            logging.debug("Pushed data")
 #            logging.debug("{:f} - {:s}".format(time.time(), str(sensor_values)))
-            time.sleep(self.read_wait_time)
-            counter += 1
-            if time.time() - t1 >= 10.0:
-                logging.debug("fps is {:.2f}".format(counter / 10.0))
-                t1 = time.time()
-                counter = 0
-            # self.exit_counter -= 1
+            time.sleep(self.read_wait_time + random.random() / 1000.0)
+            self.counter += 1
+            if time.time() - self.t1 >= 10.0:
+                logging.debug("fps is {:.2f}".format(self.counter / 10.0))
+                self.t1 = time.time()
+                self.counter = 0
+                
+    def m_reset_pause(self, name='self'):
+        # resume thread from pause
+
+        self.t1 = time.time()
+        self.counter = 0
+        self.pause_ = False
+        logging.debug("Resumed for {:s}".format(name))
 
 class FileSaver(threading.Thread):
     # file provides saving in binary file all recorded data
@@ -201,7 +224,9 @@ class FileSaver(threading.Thread):
     
     def run(self):
         # enter point in the Thread
+
         logging.debug("Starting")
+            
         self.save_data()
         logging.debug("Exiting")
         
@@ -330,18 +355,21 @@ class Comminicator(MyThread, threading.Thread):
     
     
     
-    def __init__(self, storage, usb_port='/dev/ardu', baudr=9600, usb_timeout=1.0, sense_threads = None):
+    def __init__(self, storage, hat, usb_port='/dev/ardu', baudr=9600, usb_timeout=1.0, sense_threads = None):
         # class's constructor
 
 #        threading.Thread.__init__(self)
         super(Comminicator, self).__init__()
         self.name = 'Communicator'
         self.shell = Shell_executer()
+        self.hat = hat
         # init TCP/IP local server
         
         self.socket = sc.socket(sc.AF_INET, sc.SOCK_STREAM)
         self.socket.bind((self.rpi_ip, self.port))
-        self.socket.settimeout(0.1)
+        self.time_out_tcp = 0.1
+        self.socket.settimeout(self.time_out_tcp)
+        
         self.conn = None
         
         # init USB connection with the Arduino
@@ -382,7 +410,7 @@ class Comminicator(MyThread, threading.Thread):
             self.time_synchronized = True
         return res
     
-    def turnoff_rpi_power(self, after_seconds=60):
+    def turnoff_rpi_power(self, after_seconds=20):
         # send message to the ardu for waiting N seconds and then powering off the RPI
         
         return self.send_message('turn_off_rpi:{:d}'.format(after_seconds))
@@ -397,6 +425,8 @@ class Comminicator(MyThread, threading.Thread):
                 return res
             else:
                 return False
+        else:
+            return False
     
     def send_sleep_time(self):
         # from calendar get current/next sleeping time for the Ardu
@@ -407,7 +437,7 @@ class Comminicator(MyThread, threading.Thread):
     
     def send_wakeup_time(self):
         # from calendar get current/next wakeup time for the Ardu
-        pass
+        return True
     
     def set_ardu_mode(self, mode = 'maint'):
         # set Ardu working mode: 'maint' - maintenance True or False
@@ -424,18 +454,29 @@ class Comminicator(MyThread, threading.Thread):
     
     def shutdown_rpi(self, force=False):
         # stops all threads and shutdown Rpi
-        
-        if not force:                
-            self.send_wakeup_time()
+        if not force:
             self.set_ardu_mode(mode='run')
-            self.turnoff_rpi_power()
+            time.sleep(2.5)
+            self.get_messages()
+
+            self.send_wakeup_time()
+            time.sleep(2.5)
+            self.get_messages()
+
+            self.turnoff_rpi_power(7)
+            time.sleep(3.5)
+            
 
         # stop all senses threads
+
+                
+#        self.get_messages()
+        
+#        if force:
         for sense_thread in self.sense_threads:
-            sense_thread.m_stop()
+            sense_thread.m_stop(sense_thread.getName())
             while not sense_thread.m_stopped():
                 time.sleep(0.05)
-        
         self.shell.shutdown()
         
         
@@ -458,6 +499,8 @@ class Comminicator(MyThread, threading.Thread):
                 logging.debug("Error: No USB connection with Ardu!")
                 return False
             bytes_ = self.serial.write(message + '\n')
+            time.sleep(0.2)
+            
             logging.debug("Send msg to USB: "+ message)
         else:
             if self.conn is None:
@@ -477,9 +520,11 @@ class Comminicator(MyThread, threading.Thread):
                 # USB or TCP processing
                 if usb_type:
                     answ = self.read_usb_data()
+                    answ = answ.translate(None, chr(10)+chr(13))
                     logging.debug("Got msg from USB: "+ answ)
                 else:
                     answ = self.read_tcp_data()
+                    answ = answ.translate(None, chr(10)+chr(13))
                     logging.debug("Got msg from TCP/IP client: "+ answ)
                     
                 if answ == 'ack':
@@ -522,9 +567,10 @@ class Comminicator(MyThread, threading.Thread):
             
                 # pause sensing threads on the rpi
                 for sense_thread in self.sense_threads:
-                    sense_thread.m_pause()
+                    sense_thread.m_pause(sense_thread.getName())
                     while not sense_thread.m_paused():
                         time.sleep(0.05)
+#                    logging.debug("Paused")
                         
                 return True
             return False
@@ -535,12 +581,24 @@ class Comminicator(MyThread, threading.Thread):
             
                 # disable Ardu maint mode
                 res = self.set_ardu_mode('run')
+                self.get_current_time()
                 if res:
                     self.ardu_maint_mode = False
                 
                     # start sensing threads on the rpi
+#                    self.hat.lock.acquire()
+#                    self.hat.lock.release()  
+#
                     for sense_thread in self.sense_threads:
-                        sense_thread.m_reset_pause()
+
+                        for t in threading.enumerate():
+                            if t.getName() == sense_thread.getName():
+                               t.m_reset_pause(t.getName())
+                               time.sleep(0.5)
+                             
+#                        while sense_thread.m_paused():
+#                            time.sleep(0.05)
+#                        logging.debug("Resumed")
                     return True
                 return False
             
@@ -548,7 +606,8 @@ class Comminicator(MyThread, threading.Thread):
     def read_tcp_data(self):
         # reads data from the TCP port
         
-        try:        
+        try:
+#            logging.debug("Reading TCP data, timeout is " + str(self.conn.gettimeout()))
             data = self.conn.recv(1024)
             if not data:
                 return None
@@ -574,6 +633,8 @@ class Comminicator(MyThread, threading.Thread):
                 self.socket.listen(1)
                 self.conn, addr = self.socket.accept()
                 logging.debug("Connected with TCP client from {:s} adress.".format(addr))
+                self.conn.settimeout(self.time_out_tcp)
+#                self.socket.setblocking(0)
             except sc.timeout as e:
                 return False
         else:
@@ -586,13 +647,13 @@ class Comminicator(MyThread, threading.Thread):
 
         while self.serial.inWaiting() > 0:
             byte_ = self.serial.read(1)
-#            if byte_ == '\n':
-#                break
-#            else:
-            usb_data += byte_
+            if ord(byte_) == 13 or ord(byte_) == 10:
+                break
+            else:
+                usb_data += byte_
         
         
-        return usb_data[:-1]
+        return usb_data
     
     def get_messages(self):
         # get messages from the USB or TCP port and switch data flow
@@ -604,11 +665,15 @@ class Comminicator(MyThread, threading.Thread):
 
             usb_line = self.read_usb_data()
             time.sleep(0.05)
+#            logging.debug("Data from USB: " + usb_line)
+#            for usb_line in usb_data:
+                
             if len(usb_line) > 0:
                 
-                logging.debug("Got msg from USB: " + usb_line)
+                logging.debug("Got msg from USB: " + usb_line + ":len=" + str(len(usb_line)))
                 # send RPI time to Ardu
-                if usb_line == 'curr_time' and len(usb_line) < 11:
+                if usb_line == 'curr_time' and len('curr_time') == len(usb_line):
+#                    logging.debug("Processiong curr_time")
                     self.send_message('ack', ack_need=False)
                     self.get_current_time()
                     
@@ -631,20 +696,25 @@ class Comminicator(MyThread, threading.Thread):
             if self.listen_tcp_client():
                 tcp_data = self.read_tcp_data()
                 
-                if tcp_data is not None:
+                if tcp_data is not None and len(tcp_data) > 0:
                     # close connection by the client request
                 
                     logging.debug("Got msg from TCP/IP client: " + tcp_data)
                     if tcp_data == 'logout':
                         self.conn.close()
+                        self.conn = None
                     
                     # synch time from the host computer
                     if tcp_data.find("time_synch") >=0:
-                        time_epoch = long(tcp_data[tcp_data.find("time_synch") + 12:])
-                        time_set_res = self.set_current_time(time_epoch)
+                        try:
+                            time_epoch = long(tcp_data[tcp_data.find("time_synch") + 11:])
+                            
+                            time_set_res = self.set_current_time(time_epoch)
 
-                        if time_set_res:
-                            self.send_message('ack', usb_type=False, ack_need=False)
+                            if time_set_res:
+                                self.send_message('ack', usb_type=False, ack_need=False)
+                        except:
+                            self.send_message('Something wrong with the time epoch', usb_type=False, ack_need=False)
                     
                     # delete all frames and log files
                     if tcp_data == 'clean_rpi':
@@ -675,10 +745,8 @@ class Comminicator(MyThread, threading.Thread):
 
                     # disable maintenance mode for the rpi and shutdown rpi
                     if tcp_data == 'disable_maint&shutdown':
-                        res = self.set_maint_mode(False)
-                        if res:
-                            self.send_message('ack', usb_type=False, ack_need=False)
-                            self.shutdown_rpi()
+                        self.send_message('ack', usb_type=False, ack_need=False)
+                        self.shutdown_rpi()
                             
                     if tcp_data == 'curr_time':
                         self.send_message('ack')
@@ -704,7 +772,9 @@ class Comminicator(MyThread, threading.Thread):
         
     def run(self):
         # run thread
+        
         logging.debug("Starting")
+            
         while True:
 #            if self.m_stopped():
 #                break
@@ -811,7 +881,11 @@ class Camera_capture(MyThread, threading.Thread):
         if not exists(self.path_to_save):
             makedirs(self.path_to_save)
     
-        logging.debug("Starting")
+        if self.m_paused():
+            logging.debug("Starting in paused mode")
+        else:
+            logging.debug("Starting")
+            
         self.capture()
         logging.debug("Exiting")
 
@@ -823,7 +897,7 @@ class Camera_capture(MyThread, threading.Thread):
             if self.m_stopped():
                 break
             if self.m_paused():
-                time.sleep(0.5)
+                time.sleep(0.1)
                 continue
             
             camera = PiCamera()
@@ -836,6 +910,8 @@ class Camera_capture(MyThread, threading.Thread):
             self.storage.push_data({'image': self.counter, 'time': time.time()})
             time.sleep(abs(self.sleep_time - prep_time))
             self.counter += 1
+    
+    
         
 
 class Data_storage(object):

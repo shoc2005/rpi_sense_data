@@ -38,7 +38,7 @@ thread6 = hdc.Camera_capture(name='rpiCamera', storage_thread = storage_thread, 
                          sleep_time=12.0)
 #thread6.setDaemon(True)
 
-thread7 = hdc.Comminicator(storage_thread, sense_threads = [thread1, thread2, thread3, thread4, thread5, thread6])
+thread7 = hdc.Comminicator(storage_thread, sense, sense_threads = [thread1, thread2, thread3, thread4, thread5, thread6])
 thread7.setDaemon(True)
 
 # Start new Threads

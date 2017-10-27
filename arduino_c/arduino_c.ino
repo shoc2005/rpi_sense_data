@@ -56,7 +56,7 @@ class Messenger {
       return true;      
 
     // if message is not "ack"
-    int read_timeout=1000;
+    int read_timeout=200;
     
     String ack_msg = read_data(read_timeout);
     //Serial.println("got answ:"+ack_msg+String(ack_msg.length()));
@@ -210,7 +210,7 @@ class Pin_controller {
   void check_button_state() {
     // check button state
     buttonState = digitalRead(buttonPin);
-    controlState = digitalRead(controlPin);
+    //controlState = digitalRead(controlPin);
     if (buttonState == HIGH && time_push == -1) {
       // the button pressed now
       event_length = 0;
@@ -229,15 +229,15 @@ class Pin_controller {
           return;          
         }
       }
-      delay(10);
-      return;
+      //delay(10);
+      //return;
     }
 
   }
 
   bool check_button_pressed() {
     // check if the button is pressed
-    if (event_length > 0)
+    if (event_length > 50)
       return true;
     else
       return false;
@@ -252,7 +252,7 @@ class Pin_controller {
     if (check_button_pressed()) {
       controlState = digitalRead(controlPin); //rpi is powered
       if (controlState == HIGH) {
-        if (event_length >= off_delay_time) {
+        if (event_length == off_delay_time) {
           event_length = 0;
           time_push = -1;
           return 2;
@@ -291,17 +291,17 @@ class Pin_controller {
     controlState = digitalRead(controlPin);
     if (controlState == HIGH) {
       digitalWrite(controlPin, LOW);
-       //beep(500);
+      beep(500);
     }
   }
 
   int schedule_rpi_power_off(int xseconds) {
     // wait X seconds and turn off rpi power pin
     
-    long int t1 = millis();
-    while (true) {
-      if ((millis() - t1) >= xseconds * 1000)
-        break;
+    time_t t1 = now();
+    while (now() - t1 <= xseconds) {
+      delay(1000);
+      beep(100);
     }
     power_off_rpi();
   }
@@ -333,6 +333,8 @@ class Communicator
    Messenger *serial_obj;
    Datetime_mini *dateTime;
    Pin_controller *pin_ctrl;
+   int trigger_req_counter = 1;
+   int currt_time_req_counter = 1;
 
   public:
   Communicator(Datetime_mini *date_time_obj, Pin_controller *pin_control) {
@@ -348,6 +350,7 @@ class Communicator
 
     int start_index = msg.lastIndexOf(":") + 1;
     int seconds = msg.substring(start_index).toInt();
+    Serial.println("Turning Rpi after " + String(seconds));
     pin_ctrl -> schedule_rpi_power_off(seconds);
     
   }
@@ -382,35 +385,37 @@ class Communicator
 
   int get_time_triggers() {
     // ask the repi for return of the next shutdown and wakeup time
-    bool answ = serial_obj->send_message("trigger_time");
-    if (answ) {
-      while (!dateTime->check_triggers() && !maintenance) {
-        check_for_data();
-        delay(50);   
-      }
-      return 1;
+    if  (trigger_req_counter >= 3) {
+      return false;
     }
-    return -1;
+    bool answ = false;
+    if (!dateTime->check_triggers() && !maintenance) {
+       answ = serial_obj->send_message("trigger_time");
+       trigger_req_counter += 1;
+    }
+
+    return answ;
   }
 
   int get_rpi_time() {
     // ask the repi for return of the next shutdown and wakeup time
-    bool answ = serial_obj->send_message("curr_time");
-    //delay(50);
-    //check_for_data();
-    if (answ) {
-      while (!dateTime->check_sync_status() && !maintenance) {
-        check_for_data();
-        delay(50);
-      }
+    if (currt_time_req_counter >= 3){
+      return false;
     }
+    bool answ = false;
+    if (!dateTime->check_sync_status() && !maintenance) {
+      answ = serial_obj->send_message("curr_time");
+      currt_time_req_counter += 1;
+    }
+    
+    return answ;
   }
 
   int send_rpi_shutdown() {
     // send messaga for rpi shutdown
     
     if (serial_obj->send_message("shutdown")) {
-      delay(60);
+      delay(20);
 
       //** TURN OFF PIN **
       return 1;
@@ -501,25 +506,28 @@ class Communicator
       // check time synch message
       if (msg.startsWith("time_synch"))
       {
-
+        serial_obj->send_message("ack");
         time_t time_ = (time_t)get_unix_time(msg, "time_synch");
+        
         Serial.println((String)"Time sync: " + time_to_str(time_));
         dateTime->set_current_time(time_);
-        serial_obj->send_message("ack");
+        
       }
     
       // check sleep trigger time message
       if (msg.startsWith("sleep_time"))
       {
+        serial_obj->send_message("ack");
         time_t time_ = (time_t)get_unix_time(msg, "sleep_time");
         Serial.println((String)"Shutdown Time: " + time_to_str(time_));
         dateTime->set_shutdown_time(time_);
-        serial_obj->send_message("ack");
+        
       }
     
       // check sleep trigger time message
       if (msg.startsWith("wakeup_time"))
       {
+        serial_obj->send_message("ack");
         time_t time_ = (time_t)get_unix_time(msg, "wakeup_time");
         Serial.println((String)"Wakeup Time: " + time_to_str(time_));
         dateTime->set_wakeup_time(time_);
@@ -537,6 +545,8 @@ class Communicator
   
       if (msg.startsWith("enable_maint")) {
         maintenance = true;
+        trigger_req_counter = 1;
+        currt_time_req_counter = 1;
         serial_obj->send_message("ack");
         Serial.println("Ardu in maintenance mode");
       }
@@ -544,6 +554,7 @@ class Communicator
       if (msg.startsWith("turn_off_rpi")) {
         serial_obj->send_message("ack");
         Serial.println("Rpi schedule shutdown");
+        
         schedule_rpi_shutdown(msg);
         
       }
@@ -583,11 +594,11 @@ Pin_controller * pin_contr;
 
 
 
-
 String serial_msg;
 
 void check_button_pressed_() {
   // check if button pressed
+  //Serial.println("Check button");
   pin_contr->check_button_state();
 
   int button = pin_contr->check_button_type();
@@ -598,16 +609,14 @@ void check_button_pressed_() {
     if (sh_result > 0) {
       pin_contr->beep(200);
       ardu_time->shutdown_done();
-      Serial.println("Waiting 60 secs");
+      Serial.println("Waiting 20 secs");
       time_t tt = now();
-      while (now() - tt <= 60) {
-        serial_communicator->check_for_data();
-        delay(100);
+      while (now() - tt <= 20) {
+        //serial_communicator->check_for_data();
+        delay(1000);
+        pin_contr->beep(200);
       }
       pin_contr->power_off_rpi();
-      pin_contr->beep(200);
-      delay(200);
-      pin_contr->beep(200);
       Serial.println("Rpi shutdown successfull");
     }
     else
@@ -616,6 +625,7 @@ void check_button_pressed_() {
 
   if (button == 3) {
     // turnon the rpi
+    
     if (!maintenance) {
       ardu_time->wakeup_done();
     
@@ -649,6 +659,8 @@ void loop() {
   
   check_button_pressed_();
   serial_communicator->check_for_data();
+
+  delay(50);
   
   if (maintenance) {
     // arduino in maintenance mode
@@ -665,14 +677,14 @@ void loop() {
         // check shutdown time (rpi sleep time)
         if (ardu_time->check_to_shutdown()) {
   
-          // shutdown rpi and wait 60 sec until rpi shutdown
+          // shutdown rpi and wait 20 sec until rpi shutdown
           int sh_result = serial_communicator->send_rpi_shutdown();
           if (sh_result > 0) {
-            Serial.println("Waiting 60 secs");
+            Serial.println("Waiting 20 secs");
             time_t t1 = now();
-            while (now() - t1 <= 60) {
-              serial_communicator->check_for_data();
-              delay(100);
+            while (now() - t1 <= 20) {
+              //serial_communicator->check_for_data();
+              delay(1000);
             }
             pin_contr->power_off_rpi();
             ardu_time->shutdown_done();
@@ -706,6 +718,8 @@ void loop() {
       serial_communicator->get_rpi_time(); // request for time synhronization from rpi
       delay(50);
     }
-  }  
+  }
+
+  delay(50);
 
 }
