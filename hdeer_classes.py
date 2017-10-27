@@ -22,6 +22,7 @@ import socket as sc
 import os
 import shutil
 import random
+import time
 
 class Sense_board(SenseHat):
     # inherition of SenseHat for measuring concurent reading
@@ -392,6 +393,11 @@ class Comminicator(MyThread, threading.Thread):
         self.sense_threads = sense_threads
         
         self.storage = storage
+        
+        self.calendar = Calendar(uptime_in_mins=60 * 4)
+        curr_dir = os.path.dirname(os.path.abspath(__file__))
+        calendar_file = join(curr_dir, 'calendar.txt')
+        self.calendar.load_calendar_from_file(calendar_file)
 
     
     def usb_port_listener(self):
@@ -755,6 +761,17 @@ class Comminicator(MyThread, threading.Thread):
                     if tcp_data == 'astatus':
                         self.send_message('status', usb_type=True, ack_need=False)
                     
+                    if tcp_data == 'uptimes':
+                        self.send_message('ack', usb_type=False, ack_need=False)
+                        wake_, down_ = self.calendar.get_sleep_up_time(in_epoch = True)
+                        logging.debug("Wakeup time UTC: {:d}, down time: {:d}".format(wake_, down_))
+                        wake_, down_ = self.calendar.get_sleep_up_time(in_epoch = False)
+                        logging.debug("Wakeup time LOCAL: {:s}, down time: {:s}".format(str(wake_), str(down_)))
+                    
+                    if tcp_data == 'calendar':
+                        self.send_message('ack', usb_type=False, ack_need=False)
+                        for item in self.calendar.up_event_times:
+                            logging.debug(str(item))
                     
                 
                     
@@ -947,14 +964,103 @@ class Data_storage(object):
 class Calendar(object):
     # class for sleep and wakeup time management
     
-    def __init__(self):
+    def __init__(self, uptime_in_mins=120):
         super(Calendar, self).__init__()
-        pass
+        self.uptime_in_mins = uptime_in_mins
+        
+        self.up_event_times = []
+        
+        
     
-    def get_sleep_time(self):
-        pass
+    def load_calendar_from_file(self, file_name):
+        # loads calendar from txt file
     
-    def get_wakeup_time(self):
-        pass
+        f = open(file_name, 'r')
+        data = f.read()
+        f.close()
+        
+        counter = 0
+        
+        for line in data.split('\n'):
+            
+            # ignoring lines with #
+            if line.find('#') >= 0:
+                continue
+            
+#            try:
+            line = line.translate(None, chr(10)+chr(13))
+            date_s, rise_s, down_s = line.split(' ')
+
+            # prepare rpiup event times
+            self.add_item(date_s, rise_s)
+            self.add_item(date_s, down_s)
+                
+#            except:
+#                logging.debug("Calendar's line was ignored: {:s}".format(line))
+#                continue            
+
+            counter += 2
+        
+        logging.debug("Calendar: loaded {:d} records.".format(counter))
+            
     
+    def add_item(self, date_s, time_s):
+        # adds new Item to the calendar
+        
+        uptime = datetime.datetime.strptime(date_s + time_s, '%d.%m.%Y%H:%M')
+        self.up_event_times.append(uptime)
+
+    def get_nearest_up_time(self):
+        
+        if len(self.up_event_times) == 0:
+            logging.debug("Calendar is not loaded")
+            return None
+        
+        
+        curr_time = datetime.datetime.now()
+#        logging.debug("Curr time: " + str(curr_time))
+        nearest_diff = None
+        nearest = None
+        
+        for uptime in self.up_event_times:
+#            logging.debug("Processing: " + str(uptime))
+            if uptime > curr_time:
+                diff = uptime - curr_time
+                
+                if diff.total_seconds() < nearest_diff or nearest_diff is None:
+                    nearest_diff = diff.total_seconds()
+                    nearest = uptime
+#                    logging.debug("Nearest time found: " + str(nearest) + ", seconds:" + str(diff.seconds) + " " + str(nearest_diff))
+#            else:
+#                logging.debug("Ignored time found: " + str(uptime))
+                    
+        
+        return nearest
+        
+    def date2epoch(self, date_obj):
+        # converts datetime object into time epoch
+    
+        unix_time_start = datetime.datetime.strptime('01-01-1970', '%d-%m-%Y')
+        diff = date_obj - unix_time_start
+        
+        return int(diff.total_seconds() + time.timezone)
+    
+    def get_sleep_up_time(self, in_epoch = True):
+        # returns the next nearest wakeup and sleep time
+    
+        up_time = self.get_nearest_up_time()
+        logging.debug("Nearest time found: " + str(up_time))
+        
+        half_up_time = int(self.uptime_in_mins / 2.0)
+        time_delta = datetime.timedelta(seconds = half_up_time * 60)
+        
+        # in local time
+        wakeup_time = up_time - time_delta
+        sleep_time = up_time + time_delta
+        
+       
+        if in_epoch:
+            return self.date2epoch(wakeup_time), self.date2epoch(sleep_time)
+        else:
+            return wakeup_time, sleep_time
     
