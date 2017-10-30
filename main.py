@@ -8,10 +8,17 @@ HungryDeer
 import hdeer_classes as hdc
 import logging
 import threading
+import os
+from os.path import join
+
+curr_dir = os.path.dirname(os.path.abspath(__file__))
+
 
 # set debug output format
 logging.basicConfig(level=logging.DEBUG,
-                    format='(%(threadName)-10s) %(message)s',
+                    format='%(asctime)s (%(threadName)-10s) %(message)s',
+                    datefmt='%d.%m.%Y %H:%M:%S',
+                    filename=join(curr_dir, 'hdeer.log')
                     )
 # Create new threads
 sense = hdc.Sense_board()

@@ -24,6 +24,7 @@ import shutil
 import random
 import time
 
+
 class Sense_board(SenseHat):
     # inherition of SenseHat for measuring concurent reading
 
@@ -394,10 +395,25 @@ class Comminicator(MyThread, threading.Thread):
         
         self.storage = storage
         
-        self.calendar = Calendar(uptime_in_mins=60 * 4)
+        self.calendar = Calendar()
         curr_dir = os.path.dirname(os.path.abspath(__file__))
         calendar_file = join(curr_dir, 'calendar.txt')
         self.calendar.load_calendar_from_file(calendar_file)
+        
+        self.scheduled_shutdown = False
+        self.set_user_activity()
+        self.beep_on = False
+    
+    
+    def set_user_activity(self):
+        # sets user's activity time
+        self.user_activity = time.time()
+    
+    def get_user_last_activity_tinterval(self):
+        # returns time inteval between the last user's activity
+        
+        return time.time() - self.user_activity    
+        
 
     
     def usb_port_listener(self):
@@ -416,10 +432,45 @@ class Comminicator(MyThread, threading.Thread):
             self.time_synchronized = True
         return res
     
+    def prepare_to_shutdown_rpi(self, force=False):
+
+        wake_, down_, in_between = self.calendar.get_sleep_up_time(in_epoch = True)                   
+                    
+        # prevent shutdown if rpi's current time is between wakeup and shutdown times
+
+        while True:
+            res = self.send_wakeup_time(wake_)
+            if res:
+                break
+            time.sleep(0.5)
+            
+        while True:
+            res = self.send_sleep_time(down_)
+            if res:
+                break
+            time.sleep(0.5)
+
+        if in_between:
+            self.scheduled_shutdown = False
+        elif force:
+            self.scheduled_shutdown = 'run'
+        
+    
     def turnoff_rpi_power(self, after_seconds=20):
         # send message to the ardu for waiting N seconds and then powering off the RPI
+        if self.beep_on:
+            tag = 'usr'
+        else:
+            tag = ''
         
-        return self.send_message('turn_off_rpi:{:d}'.format(after_seconds))
+        msg = 'turn_off_rpi{:s}:{:d}'.format(tag, after_seconds)
+        
+        return self.send_message(msg)
+    
+    def get_ardu_time(self):
+        # gets current time from Ardu
+    
+        return self.send_message('get_ardu_time')
     
     def get_current_time(self, epoch=True):
         # get current time from RPI
@@ -427,23 +478,37 @@ class Comminicator(MyThread, threading.Thread):
         if self.time_synchronized:
             if epoch:
                 time_epoch = self.shell.get_system_time_epoch()
-                res = self.send_message('time_synch:{:d}'.format(time_epoch))
-                return res
+                while True:
+                    res = self.send_message('time_synch:{:d}'.format(time_epoch))
+                    if res:
+                        break
+                    time.sleep(0.2)
+                    
+                return True
             else:
                 return False
         else:
             return False
     
-    def send_sleep_time(self):
-        # from calendar get current/next sleeping time for the Ardu
-       
+    def send_sleep_time(self, epoch):
+        # set sleep time for the Rpi
+
+        res = self.send_message('sleep_time:{:d}'.format(epoch))
         
-        
-        pass
+        if res:
+            return True
+        else:
+            return False
     
-    def send_wakeup_time(self):
-        # from calendar get current/next wakeup time for the Ardu
-        return True
+    def send_wakeup_time(self, epoch):
+        # set wakeup time for the RPi
+    
+        res = self.send_message('wakeup_time:{:d}'.format(epoch))
+        
+        if res:
+            return True
+        else:
+            return False
     
     def set_ardu_mode(self, mode = 'maint'):
         # set Ardu working mode: 'maint' - maintenance True or False
@@ -460,30 +525,17 @@ class Comminicator(MyThread, threading.Thread):
     
     def shutdown_rpi(self, force=False):
         # stops all threads and shutdown Rpi
-        if not force:
-            self.set_ardu_mode(mode='run')
-            time.sleep(2.5)
-            self.get_messages()
-
-            self.send_wakeup_time()
-            time.sleep(2.5)
-            self.get_messages()
-
-            self.turnoff_rpi_power(7)
-            time.sleep(3.5)
-            
-
-        # stop all senses threads
-
-                
-#        self.get_messages()
         
-#        if force:
+        if not force:
+            self.turnoff_rpi_power(20)
+            time.sleep(1.2)
+            
         for sense_thread in self.sense_threads:
             sense_thread.m_stop(sense_thread.getName())
             while not sense_thread.m_stopped():
                 time.sleep(0.05)
         self.shell.shutdown()
+        
         
         
         
@@ -496,6 +548,7 @@ class Comminicator(MyThread, threading.Thread):
         # check space avalabale on Rpi
         bytes_, _ = self.shell.get_memory_available()
         self.send_message(str(bytes_), usb_type=False, ack_need=False)
+        
     
     def send_message(self, message, usb_type=True, ack_need=True):
         # send message to the Ardu
@@ -526,7 +579,6 @@ class Comminicator(MyThread, threading.Thread):
                 # USB or TCP processing
                 if usb_type:
                     answ = self.read_usb_data()
-                    answ = answ.translate(None, chr(10)+chr(13))
                     logging.debug("Got msg from USB: "+ answ)
                 else:
                     answ = self.read_tcp_data()
@@ -537,7 +589,7 @@ class Comminicator(MyThread, threading.Thread):
                     return True
                 
                 # sleep
-                time.sleep(0.5)
+                time.sleep(0.1)
                 
                 n += 1
             
@@ -551,7 +603,8 @@ class Comminicator(MyThread, threading.Thread):
     
     def reset_arduino(self):
         # reset arduino
-        pass
+        
+        return self.send_message('reset')
     
     def clear_rpi(self):
         # clear rpi camera's frames and log files
@@ -566,9 +619,12 @@ class Comminicator(MyThread, threading.Thread):
         
         if maint:
             # set Ardu
+            
             res = self.set_ardu_mode('maint')
+            self.reset_arduino()
             if res:
                 self.ardu_maint_mode = True
+                self.rpi_maint_mode = True
                 self.time_synchronized = False
             
                 # pause sensing threads on the rpi
@@ -577,7 +633,7 @@ class Comminicator(MyThread, threading.Thread):
                     while not sense_thread.m_paused():
                         time.sleep(0.05)
 #                    logging.debug("Paused")
-                        
+                
                 return True
             return False
                     
@@ -586,15 +642,14 @@ class Comminicator(MyThread, threading.Thread):
             if self.rpi_maint_mode and self.time_synchronized:
             
                 # disable Ardu maint mode
+                self.reset_arduino()
                 res = self.set_ardu_mode('run')
-                self.get_current_time()
+                
                 if res:
                     self.ardu_maint_mode = False
-                
-                    # start sensing threads on the rpi
-#                    self.hat.lock.acquire()
-#                    self.hat.lock.release()  
-#
+                    self.rpi_maint_mode = False
+                    
+                    # resume all paused threads
                     for sense_thread in self.sense_threads:
 
                         for t in threading.enumerate():
@@ -602,9 +657,7 @@ class Comminicator(MyThread, threading.Thread):
                                t.m_reset_pause(t.getName())
                                time.sleep(0.5)
                              
-#                        while sense_thread.m_paused():
-#                            time.sleep(0.05)
-#                        logging.debug("Resumed")
+                    
                     return True
                 return False
             
@@ -653,16 +706,19 @@ class Comminicator(MyThread, threading.Thread):
 
         while self.serial.inWaiting() > 0:
             byte_ = self.serial.read(1)
-            if ord(byte_) == 13 or ord(byte_) == 10:
+            if ord(byte_) == 13:
                 break
             else:
                 usb_data += byte_
         
+        usb_data = usb_data.translate(None, chr(10)+chr(13))
         
         return usb_data
     
     def get_messages(self):
         # get messages from the USB or TCP port and switch data flow
+        
+        t1 = time.time()
         
         while True:
             # read USB data
@@ -685,18 +741,52 @@ class Comminicator(MyThread, threading.Thread):
                     
                 if usb_line == 'trigger_time':
                     self.send_message('ack', ack_need=False)
-                    self.send_sleep_time()
-                    time.sleep(0.1)
-                    self.send_wakeup_time()
-                    time.sleep(0.1)
+                    wake_, down_, in_between = self.calendar.get_sleep_up_time(in_epoch = True)
                     
-                if usb_line == 'shutdown':
+                    if self.scheduled_shutdown:
+                        self.prepare_to_shutdown_rpi(force=True)
+                    else:
+                        self.prepare_to_shutdown_rpi()
+                    
+#                    self.send_sleep_time(down_)
+#                    time.sleep(1.0)
+#                    self.send_wakeup_time(wake_)
+#                    time.sleep(1.0)                    
+#                    
+#                    if self.scheduled_shutdown and not in_between:
+#                        # prevent shutdown if rpi's current time is between wakeup and shutdown times
+#                        
+#                        self.scheduled_shutdown = 'run'
+#                    else:
+#                        self.scheduled_shutdown = False
+              
+                    
+                    
+                    
+                if usb_line == 'shutdown' or usb_line == 'shutdownusr':
+                    if usb_line == 'shutdownusr':
+                        self.beep_on = True
+                    else:
+                        self.beep_on = False
+                        
                     self.send_message('ack', ack_need=False)
-                    self.shutdown_rpi()
+                    self.scheduled_shutdown = True
+                    
+#                    self.prepare_to_shutdown_rpi()               
+                    
                 
-                if usb_line.find('curr_time') == 0 and len(usb_line) > 11:
+                if usb_line.find('curr_time') == 0 and len(usb_line) > 11 and not self.time_synchronized:
                     self.send_message('ack', ack_need=False)
                     self.set_current_time(long(usb_line[10:]))
+                    if self.rpi_maint_mode:
+                        # resume all paused threads
+                        for sense_thread in self.sense_threads:
+                            for t in threading.enumerate():
+                                if t.getName() == sense_thread.getName():
+                                   t.m_reset_pause(t.getName())
+                                   time.sleep(0.5)
+                        self.rpi_maint_mode = False
+                    
             
             # read TCP data
             if self.listen_tcp_client():
@@ -707,11 +797,14 @@ class Comminicator(MyThread, threading.Thread):
                 
                     logging.debug("Got msg from TCP/IP client: " + tcp_data)
                     if tcp_data == 'logout':
+                        self.set_user_activity()
                         self.conn.close()
                         self.conn = None
+                        
                     
                     # synch time from the host computer
                     if tcp_data.find("time_synch") >=0:
+                        self.set_user_activity()
                         try:
                             time_epoch = long(tcp_data[tcp_data.find("time_synch") + 11:])
                             
@@ -724,26 +817,34 @@ class Comminicator(MyThread, threading.Thread):
                     
                     # delete all frames and log files
                     if tcp_data == 'clean_rpi':
-                        self.clear_rpi()
-                        self.send_message('ack', usb_type=False, ack_need=False)
+                        self.set_user_activity()
+                        res = self.clear_rpi()
+                        if res:
+                            self.send_message('done', usb_type=False, ack_need=False)
+                        else:
+                            self.send_message('ack', usb_type=False, ack_need=False)
                         
                     # get available space on rpi SD
                     if tcp_data == 'memory':
+                        self.set_user_activity()
                         self.check_space_avalable()
                     
                     # shutdown rpi 
                     if tcp_data == 'shutdown':
+                        
                         self.send_message('ack', usb_type=False, ack_need=False)
                         self.shutdown_rpi(force=True)
                         
                     # enable maintenance mode for the rpi
                     if tcp_data == 'enable_maint':
+                        self.set_user_activity()
                         res = self.set_maint_mode(True)
                         if res:
                             self.send_message('ack', usb_type=False, ack_need=False)
                         
                     # disable maintenance mode for the rpi
                     if tcp_data == 'disable_maint':
+                        self.set_user_activity()
                         res = self.set_maint_mode(False)
                         if res:
                             self.send_message('ack', usb_type=False, ack_need=False)
@@ -751,29 +852,53 @@ class Comminicator(MyThread, threading.Thread):
 
                     # disable maintenance mode for the rpi and shutdown rpi
                     if tcp_data == 'disable_maint&shutdown':
-                        self.send_message('ack', usb_type=False, ack_need=False)
-                        self.shutdown_rpi()
+                        res = self.send_message('ack', usb_type=False, ack_need=False)
+                        if res:
+                            self.set_maint_mode(False)
+                            self.scheduled_shutdown = True
+                        
+
                             
                     if tcp_data == 'curr_time':
+                        self.set_user_activity()
                         self.send_message('ack')
                         self.get_current_time()
                         
                     if tcp_data == 'astatus':
+                        self.set_user_activity()
                         self.send_message('status', usb_type=True, ack_need=False)
                     
                     if tcp_data == 'uptimes':
+                        self.set_user_activity()
                         self.send_message('ack', usb_type=False, ack_need=False)
-                        wake_, down_ = self.calendar.get_sleep_up_time(in_epoch = True)
-                        logging.debug("Wakeup time UTC: {:d}, down time: {:d}".format(wake_, down_))
-                        wake_, down_ = self.calendar.get_sleep_up_time(in_epoch = False)
+
+                        wake_, down_, _ = self.calendar.get_sleep_up_time(in_epoch = True)
+                        logging.debug("Wakeup time UTC epoch: {:d}, down time: {:d}".format(wake_, down_))
+                        
+                        wake_, down_, _ = self.calendar.get_sleep_up_time(in_epoch = False)
                         logging.debug("Wakeup time LOCAL: {:s}, down time: {:s}".format(str(wake_), str(down_)))
                     
                     if tcp_data == 'calendar':
+                        self.set_user_activity()
                         self.send_message('ack', usb_type=False, ack_need=False)
-                        for item in self.calendar.up_event_times:
-                            logging.debug(str(item))
-                    
+                        for on, off in self.calendar.up_event_times:
+                            logging.debug(str(on) + " " + str(off))
+            
+            if self.get_user_last_activity_tinterval() >= 10 * 60.0:
+                logging.debug("Self autoshutdown started")
+                self.prepare_to_shutdown_rpi(force=True)
+#                self.scheduled_shutdown = 'run'
+            
+            # get time from Arduino if Arduino's time is synchronized
+            if not self.time_synchronized and time.time() - t1 >= 5.0:
+                self.send_message('get_ardu_time')
+                t1 = time.time()
+            
+            if self.scheduled_shutdown == 'run':
+                self.scheduled_shutdown = False
                 
+                self.shutdown_rpi(force=False)
+
                     
         
     
@@ -943,18 +1068,24 @@ class Data_storage(object):
         # push data dictionary in the buffer
         self.buffer.push_value(data)
         
-    def delete_all_data(self, data):
+    def delete_all_data(self):
         # delete all files in the Rpi data storage
         
         # delete all items from a root path
         all_items = [item for item in listdir(self.buffer.root_path)]
+        logging.debug("Deleting all files in the {:s}".format(self.buffer.root_path))
+        time.sleep(1.0)
         try:
             for item_ in all_items:
                 # delete item
-                if isdir(item_):
-                    shutil.rmtree(item_)
+                full_path = join(self.buffer.root_path, item_)
+                logging.debug("Deleting " + full_path)
+                if isdir(full_path):
+                    shutil.rmtree(full_path)
                 else:
-                    os.remove(item_)
+                    os.remove(full_path)
+                logging.debug("Deleted " + full_path)
+                    
         except:
             logging.debug("Error in log files deletion.")
             return False
@@ -964,10 +1095,8 @@ class Data_storage(object):
 class Calendar(object):
     # class for sleep and wakeup time management
     
-    def __init__(self, uptime_in_mins=120):
+    def __init__(self):
         super(Calendar, self).__init__()
-        self.uptime_in_mins = uptime_in_mins
-        
         self.up_event_times = []
         
         
@@ -987,28 +1116,33 @@ class Calendar(object):
             if line.find('#') >= 0:
                 continue
             
-#            try:
-            line = line.translate(None, chr(10)+chr(13))
-            date_s, rise_s, down_s = line.split(' ')
-
-            # prepare rpiup event times
-            self.add_item(date_s, rise_s)
-            self.add_item(date_s, down_s)
+            try:
+                line = line.translate(None, chr(10)+chr(13))
                 
-#            except:
-#                logging.debug("Calendar's line was ignored: {:s}".format(line))
-#                continue            
+                if len(line) == 0:
+                    continue
+                
+                date_s, on_s, off_s = line.split(' ')
+    
+                # prepare rpiup event times
+                self.add_item(date_s, on_s, off_s)
+                
+            except:
+                logging.debug("Calendar's line was ignored: {:s}".format(line))
+                continue            
 
             counter += 2
         
         logging.debug("Calendar: loaded {:d} records.".format(counter))
             
     
-    def add_item(self, date_s, time_s):
+    def add_item(self, date_s, time_on_s, time_off_s):
         # adds new Item to the calendar
         
-        uptime = datetime.datetime.strptime(date_s + time_s, '%d.%m.%Y%H:%M')
-        self.up_event_times.append(uptime)
+        on_time = datetime.datetime.strptime(date_s + time_on_s, '%d.%m.%Y%H:%M')
+        off_time = datetime.datetime.strptime(date_s + time_off_s, '%d.%m.%Y%H:%M')
+        
+        self.up_event_times.append((on_time, off_time))
 
     def get_nearest_up_time(self):
         
@@ -1018,23 +1152,22 @@ class Calendar(object):
         
         
         curr_time = datetime.datetime.now()
-#        logging.debug("Curr time: " + str(curr_time))
         nearest_diff = None
         nearest = None
         
-        for uptime in self.up_event_times:
+        for uptime, downtime in self.up_event_times:
 #            logging.debug("Processing: " + str(uptime))
+            if (curr_time >= uptime + datetime.timedelta(seconds = 30) and curr_time < downtime - datetime.timedelta(seconds = 30)):
+                nearest = (uptime, downtime)
+                break
+        
             if uptime > curr_time:
                 diff = uptime - curr_time
                 
                 if diff.total_seconds() < nearest_diff or nearest_diff is None:
                     nearest_diff = diff.total_seconds()
-                    nearest = uptime
-#                    logging.debug("Nearest time found: " + str(nearest) + ", seconds:" + str(diff.seconds) + " " + str(nearest_diff))
-#            else:
-#                logging.debug("Ignored time found: " + str(uptime))
+                    nearest = (uptime, downtime)
                     
-        
         return nearest
         
     def date2epoch(self, date_obj):
@@ -1048,19 +1181,19 @@ class Calendar(object):
     def get_sleep_up_time(self, in_epoch = True):
         # returns the next nearest wakeup and sleep time
     
-        up_time = self.get_nearest_up_time()
-        logging.debug("Nearest time found: " + str(up_time))
+        up_time, down_time = self.get_nearest_up_time()
+        logging.debug("Nearest time found: UP{:s}, down{:s}".format(str(up_time), str(down_time)))
         
-        half_up_time = int(self.uptime_in_mins / 2.0)
-        time_delta = datetime.timedelta(seconds = half_up_time * 60)
+        t_now = datetime.datetime.now()
+
         
-        # in local time
-        wakeup_time = up_time - time_delta
-        sleep_time = up_time + time_delta
         
-       
+        intersect = False
+        if t_now >= up_time - datetime.timedelta(seconds = 30) and t_now + datetime.timedelta(seconds = 30) < down_time:
+            intersect = True
+        
         if in_epoch:
-            return self.date2epoch(wakeup_time), self.date2epoch(sleep_time)
+            return self.date2epoch(up_time), self.date2epoch(down_time), intersect
         else:
-            return wakeup_time, sleep_time
+            return up_time, down_time, intersect
     
