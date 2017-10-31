@@ -23,7 +23,7 @@ import os
 import shutil
 import random
 import time
-
+import stat
 
 class Sense_board(SenseHat):
     # inherition of SenseHat for measuring concurent reading
@@ -234,10 +234,12 @@ class FileSaver(threading.Thread):
         
     def save_data(self):
         # save all data into the binary file
-        
-        f = open(self.file_name, 'wb')
+        flags = os.O_WRONLY|os.O_CREAT|os.O_APPEND
+        mode = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
+        f = os.open(self.file_name, flags, mode)
+#        f = open(self.file_name, 'wb')
         # write header to the file - description on data fields used
-        f.write("KEYC_s:TIME_f:\n") # where first three is sense_hat type name and last is N or component name X, Y or Z
+        os.write(f, "KEYC_s:TIME_f:\n") # where first three is sense_hat type name and last is N or component name X, Y or Z
                                  # or KEYC is IMAG - means the image data        
         # process sense hat data
         for item in self.data:
@@ -247,20 +249,23 @@ class FileSaver(threading.Thread):
                     bytes2write = struct.pack('<fffd', item['sense_hat']['x'], 
                                               item['sense_hat']['y'], 
                                             item['sense_hat']['z'], item['time'])
-                    f.write(item['sense_type']+'C')
+                    os.write(f, item['sense_type']+'C')
                 else:
                     bytes2write = struct.pack('<fd', item['sense_hat'], item['time'])
-                    f.write(item['sense_type']+'N')
+                    os.write(f, item['sense_type']+'N')
                 
-                f.write(bytes2write)
+                os.write(f, bytes2write)
                 
             elif item.has_key('image'):
-                f.write('IMAG')
+                os.write(f, 'IMAG')
                 bytes2write = struct.pack('<Id', item['image'], item['time'])
-                f.write(bytes2write)
+                os.write(f, bytes2write)
             
-        f.close()
-        logging.debug("File written")
+        os.close(f)
+        new_mode = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
+        os.chmod(self.file_name, new_mode)
+        
+        logging.debug("File was written")
 
 class Shell_executer(object):
     # class fro shell commands execution
@@ -976,10 +981,14 @@ class MyBuffer(object):
             max_id = 1
             
         date = datetime.datetime.now()
-        new_dir = "dump_{:d}_{:s}".format(max_id, date.strftime('%d.%m.%Y'))
-        makedirs(join(self.root_path, new_dir))
+        dir_path = join(self.root_path, "dump_{:d}_{:s}".format(max_id, date.strftime('%d.%m.%Y')))
+        makedirs(dir_path)
+        
+        # set permissions
+        new_mode = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
+        os.chmod(dir_path, new_mode)
             
-        return join(self.root_path, new_dir)
+        return dir_path
         
         
     
@@ -1022,6 +1031,8 @@ class Camera_capture(MyThread, threading.Thread):
         
         if not exists(self.path_to_save):
             makedirs(self.path_to_save)
+            new_mode = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
+            os.chmod(self.path_to_save, new_mode)
     
         if self.m_paused():
             logging.debug("Starting in paused mode")
@@ -1046,7 +1057,13 @@ class Camera_capture(MyThread, threading.Thread):
             time.sleep(prep_time)
             camera.framerate = self.framerate
             camera.resolution = self.resolution
-            camera.capture(join(self.path_to_save, 'img{:05d}.jpg'.format(self.counter)), format='jpeg', quality = 70)
+            file_name = join(self.path_to_save, 'img{:05d}.jpg'.format(self.counter))
+            camera.capture(file_name, format='jpeg', quality = 70)
+            
+            # set file permissions
+            new_mode = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
+            os.chmod(file_name, new_mode)
+            
             logging.debug("Camera capture") 
             camera.close()
             self.storage.push_data({'image': self.counter, 'time': time.time()})
@@ -1069,7 +1086,7 @@ class Data_storage(object):
         self.buffer.push_value(data)
         
     def delete_all_data(self):
-        # delete all files in the Rpi data storage
+        # delete all files except current dump dir in the Rpi data storage
         
         # delete all items from a root path
         all_items = [item for item in listdir(self.buffer.root_path)]
@@ -1079,6 +1096,10 @@ class Data_storage(object):
             for item_ in all_items:
                 # delete item
                 full_path = join(self.buffer.root_path, item_)
+                
+                if self.dump_path == full_path:
+                    continue
+                
                 logging.debug("Deleting " + full_path)
                 if isdir(full_path):
                     shutil.rmtree(full_path)
