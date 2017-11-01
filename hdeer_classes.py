@@ -200,8 +200,8 @@ class Sensehat_sensor(MyThread, threading.Thread):
 #            logging.debug("{:f} - {:s}".format(time.time(), str(sensor_values)))
             time.sleep(self.read_wait_time + random.random() / 1000.0)
             self.counter += 1
-            if time.time() - self.t1 >= 10.0:
-                logging.debug("fps is {:.2f}".format(self.counter / 10.0))
+            if time.time() - self.t1 >= 180.0:
+                logging.debug("fps is {:.2f}".format(self.counter / 180.0))
                 self.t1 = time.time()
                 self.counter = 0
                 
@@ -406,7 +406,8 @@ class Comminicator(MyThread, threading.Thread):
         self.calendar.load_calendar_from_file(calendar_file)
         
         self.scheduled_shutdown = False
-        self.set_user_activity()
+        self.user_activity = None
+#        self.set_user_activity()
         self.beep_on = False
     
     
@@ -435,6 +436,7 @@ class Comminicator(MyThread, threading.Thread):
         res = self.shell.set_system_time(time)
         if res:
             self.time_synchronized = True
+            self.set_user_activity()
         return res
     
     def prepare_to_shutdown_rpi(self, force=False):
@@ -764,7 +766,9 @@ class Comminicator(MyThread, threading.Thread):
 #                        self.scheduled_shutdown = 'run'
 #                    else:
 #                        self.scheduled_shutdown = False
-              
+                if usb_line == 'current_status':
+                    self.set_user_activity()
+                    self.send_message('ack', ack_need=False)
                     
                     
                     
@@ -889,9 +893,10 @@ class Comminicator(MyThread, threading.Thread):
                         for on, off in self.calendar.up_event_times:
                             logging.debug(str(on) + " " + str(off))
             
-            if self.get_user_last_activity_tinterval() >= 10 * 60.0:
-                logging.debug("Self autoshutdown started")
-                self.prepare_to_shutdown_rpi(force=True)
+            if self.user_activity is not None and not self.rpi_maint_mode:
+                if self.get_user_last_activity_tinterval() >= 10 * 60.0:
+                    logging.debug("Self autoshutdown started")
+                    self.prepare_to_shutdown_rpi(force=True)
 #                self.scheduled_shutdown = 'run'
             
             # get time from Arduino if Arduino's time is synchronized
