@@ -33,6 +33,7 @@ class Sense_board(SenseHat):
         super(Sense_board, self).__init__()
 #        SenseHat.__init__(self)
         self.lock = threading.Lock()
+        self.active_leds = [(1,1), (2,2), (3,3)]
     
     def get_measurment(self, m_type):
         # get sensor's values
@@ -48,6 +49,42 @@ class Sense_board(SenseHat):
             self.lock.release()
 #            logging.debug("Released get_measurement")
         return t1, sensor_values
+    
+    def set_led_color(self, color=(255, 255, 255), led_id = None):
+        # set color for a particular led in the active_leds list or for all leds in the list if led_id is None
+        
+        self.lock.acquire()
+        
+        if led_id is None and len(self.active_leds) > 0:
+            for led in self.active_leds:
+                try:
+                    self.set_pixel(led[0], led[1], color)
+                except:
+                    logging.debug("Error: can´t set color {:s} to the led {:s}.".format(str(color), str(led)))
+                    
+        elif len(self.active_leds) > 0:
+            
+            if type(led_id) is not list:
+                led_id = [led_id]
+            
+            for led in led_id:
+            
+                if led in range(0, len(self.active_leds)):
+                    try:
+                        self.set_pixel(led[0], led[1], color)
+                    except:
+                        logging.debug("Error: can´t set color {:s} to the led {:s}.".format(str(color), str(led)))
+                else:
+                    logging.debug("Error: ledID {:d} is not correct.".format(led))
+        else:
+            logging.debug("Erro: active led list is empty.")
+            
+        self.lock.release()
+    
+    def reset_leds(self):
+        
+        self.set_led_color(color=(0, 0, 0))
+                    
 
 class MyThread(object):
     
@@ -289,7 +326,7 @@ class Shell_executer(object):
         out, err = self.run('df -a')
         
         if len(err) > 0:
-            return None
+            return None, None
         
         out_lines = out.split('\n')
         
@@ -301,9 +338,9 @@ class Shell_executer(object):
                     continue
                 fields.append(field)
             if fields[5] == mount_point and fields[4][:-1] != '':
-                return int(fields[3]), fields[4][:-1]
+                return int(fields[3]), int(fields[4][:-1])
             
-        return None
+        return None, None
     
     def get_system_time_epoch(self):
         # returns current UTC time in seconds since 1970-01-01 00:00:00 UTC
@@ -409,6 +446,7 @@ class Comminicator(MyThread, threading.Thread):
         self.user_activity = None
 #        self.set_user_activity()
         self.beep_on = False
+        
     
     
     def set_user_activity(self):
@@ -544,18 +582,51 @@ class Comminicator(MyThread, threading.Thread):
         self.shell.shutdown()
         
         
-        
+    
         
     
-    def check_ardu_status(self):
-        # check current status of the Ardu
-        pass
-    
-    def check_space_avalable(self, led_on=True):
+    def show_rpi_status(self, led_on_after= 1.0, led_off_after=5.0):
         # check space avalabale on Rpi
-        bytes_, _ = self.shell.get_memory_available()
-        self.send_message(str(bytes_), usb_type=False, ack_need=False)
         
+        bytes_, percen = self.shell.get_memory_available()
+
+
+        if not self.time_synchronized and self.rpi_maint_mode:
+            t = threading.Timer(led_on_after, self.hat.set_led_color, [(255, 255, 255), 0]) # white
+            t.start()
+            
+        elif self.rpi_maint_mode:
+            t = threading.Timer(led_on_after, self.hat.set_led_color, [(255, 255, 0), 0]) # yellow
+            t.start()
+        else:
+            t = threading.Timer(led_on_after, self.hat.set_led_color, [(255, 255, 0), 0])
+            t.start()
+
+
+        
+        if bytes_ is not None:
+            self.send_message(str(bytes_), usb_type=False, ack_need=False)
+            
+            if percen >= 75:
+                color = (0, 255, 0) # green
+            elif percen >= 50:
+                color = (255, 255, 0) # yellow
+            elif percen >= 25:
+                color = (0, 128, 255) # blue
+            else:
+                color = (255, 0, 0) # red
+            
+            leds = [1, 2]
+            # turn on leds
+            
+            t1 = threading.Timer(led_on_after, self.hat.set_led_color, [color, leds])
+            t1.start()
+            
+        
+        # turn off leds after 5 sec
+        t2 = threading.Timer(led_off_after, self.hat.set_led_color, [(0, 0, 0)])
+        t2.start()
+    
     
     def send_message(self, message, usb_type=True, ack_need=True):
         # send message to the Ardu
@@ -755,21 +826,12 @@ class Comminicator(MyThread, threading.Thread):
                     else:
                         self.prepare_to_shutdown_rpi()
                     
-#                    self.send_sleep_time(down_)
-#                    time.sleep(1.0)
-#                    self.send_wakeup_time(wake_)
-#                    time.sleep(1.0)                    
-#                    
-#                    if self.scheduled_shutdown and not in_between:
-#                        # prevent shutdown if rpi's current time is between wakeup and shutdown times
-#                        
-#                        self.scheduled_shutdown = 'run'
-#                    else:
-#                        self.scheduled_shutdown = False
+
                 if usb_line == 'current_status':
                     self.set_user_activity()
-                    self.send_message('ack', ack_need=False)
                     
+                    self.send_message('ack', ack_need=False)
+                    self.show_rpi_status()
                     
                     
                 if usb_line == 'shutdown' or usb_line == 'shutdownusr':
@@ -795,6 +857,7 @@ class Comminicator(MyThread, threading.Thread):
                                    t.m_reset_pause(t.getName())
                                    time.sleep(0.5)
                         self.rpi_maint_mode = False
+                        self.ardu_maint_mode = False
                     
             
             # read TCP data
@@ -818,9 +881,12 @@ class Comminicator(MyThread, threading.Thread):
                             time_epoch = long(tcp_data[tcp_data.find("time_synch") + 11:])
                             
                             time_set_res = self.set_current_time(time_epoch)
+                            
 
                             if time_set_res:
                                 self.send_message('ack', usb_type=False, ack_need=False)
+                                self.check_rpi_status_with_leds(1.0)
+                            
                         except:
                             self.send_message('Something wrong with the time epoch', usb_type=False, ack_need=False)
                     
@@ -836,7 +902,7 @@ class Comminicator(MyThread, threading.Thread):
                     # get available space on rpi SD
                     if tcp_data == 'memory':
                         self.set_user_activity()
-                        self.check_space_avalable()
+                        self.show_rpi_status()
                     
                     # shutdown rpi 
                     if tcp_data == 'shutdown':
@@ -851,12 +917,14 @@ class Comminicator(MyThread, threading.Thread):
                         if res:
                             self.send_message('ack', usb_type=False, ack_need=False)
                         
+                        
                     # disable maintenance mode for the rpi
                     if tcp_data == 'disable_maint':
                         self.set_user_activity()
                         res = self.set_maint_mode(False)
                         if res:
                             self.send_message('ack', usb_type=False, ack_need=False)
+                        
                         
 
                     # disable maintenance mode for the rpi and shutdown rpi
@@ -866,16 +934,18 @@ class Comminicator(MyThread, threading.Thread):
                             self.set_maint_mode(False)
                             self.scheduled_shutdown = True
                         
+                        
 
                             
                     if tcp_data == 'curr_time':
                         self.set_user_activity()
                         self.send_message('ack')
-                        self.get_current_time()
+                        
                         
                     if tcp_data == 'astatus':
                         self.set_user_activity()
                         self.send_message('status', usb_type=True, ack_need=False)
+                        self.show_rpi_status()
                     
                     if tcp_data == 'uptimes':
                         self.set_user_activity()
@@ -926,10 +996,10 @@ class Comminicator(MyThread, threading.Thread):
         # run thread
         
         logging.debug("Starting")
-            
+        
+
         while True:
-#            if self.m_stopped():
-#                break
+
             self.get_messages()
             
         self.serial.close()
