@@ -33,7 +33,7 @@ class Sense_board(SenseHat):
         super(Sense_board, self).__init__()
 #        SenseHat.__init__(self)
         self.lock = threading.Lock()
-        self.active_leds = [(1,1), (2,2), (3,3)]
+        self.active_leds = [(2,6), (2,4), (2,2)]
     
     def get_measurment(self, m_type):
         # get sensor's values
@@ -65,17 +65,24 @@ class Sense_board(SenseHat):
         elif len(self.active_leds) > 0:
             
             if type(led_id) is not list:
-                led_id = [led_id]
+                if led_id not in range(0, len(self.active_leds)):
+                    logging.debug("Error: ledID {:d} is not correct.".format(led_id))
+                    return
+                leds = [self.active_leds[led_id]]
+            else:
+                leds = []
+                for le_id in led_id:
+                    if le_id not in range(0, len(self.active_leds)):
+                        logging.debug("Error: ledID {:d} is not correct.".format(led_id))
+                        continue
+                    leds.append(self.active_leds[le_id])
+                
             
-            for led in led_id:
-            
-                if led in range(0, len(self.active_leds)):
-                    try:
-                        self.set_pixel(led[0], led[1], color)
-                    except:
-                        logging.debug("Error: can´t set color {:s} to the led {:s}.".format(str(color), str(led)))
-                else:
-                    logging.debug("Error: ledID {:d} is not correct.".format(led))
+            for led in leds:
+                try:
+                    self.set_pixel(led[0], led[1], color)
+                except:
+                    logging.debug("Error: can´t set color {:s} to the led {:s}.".format(str(color), str(led)))
         else:
             logging.debug("Erro: active led list is empty.")
             
@@ -474,7 +481,7 @@ class Comminicator(MyThread, threading.Thread):
         res = self.shell.set_system_time(time)
         if res:
             self.time_synchronized = True
-            self.set_user_activity()
+            
         return res
     
     def prepare_to_shutdown_rpi(self, force=False):
@@ -497,6 +504,7 @@ class Comminicator(MyThread, threading.Thread):
 
         if in_between:
             self.scheduled_shutdown = False
+            logging.debug("Shutdown canceled - between UP and DOWN time.")
         elif force:
             self.scheduled_shutdown = 'run'
         
@@ -592,29 +600,29 @@ class Comminicator(MyThread, threading.Thread):
 
 
         if not self.time_synchronized and self.rpi_maint_mode:
-            t = threading.Timer(led_on_after, self.hat.set_led_color, [(255, 255, 255), 0]) # white
+            t = threading.Timer(led_on_after, self.hat.set_led_color, [(255, 0, 0), 0]) # white
             t.start()
             
         elif self.rpi_maint_mode:
             t = threading.Timer(led_on_after, self.hat.set_led_color, [(255, 255, 0), 0]) # yellow
             t.start()
         else:
-            t = threading.Timer(led_on_after, self.hat.set_led_color, [(255, 255, 0), 0])
+            t = threading.Timer(led_on_after, self.hat.set_led_color, [(0, 255, 0), 0]) # green
             t.start()
 
 
         
         if bytes_ is not None:
-            self.send_message(str(bytes_), usb_type=False, ack_need=False)
             
-            if percen >= 75:
-                color = (0, 255, 0) # green
-            elif percen >= 50:
-                color = (255, 255, 0) # yellow
-            elif percen >= 25:
-                color = (0, 128, 255) # blue
+            # Total 8Gb of 16Gb is available 50% in clean rpi
+            if percen >= 38:
+                color = (0, 255, 0) # green, 75-100 %
+            elif percen >= 26:
+                color = (255, 255, 0) # yellow, 50-75 %
+            elif percen >= 14:
+                color = (0, 128, 255) # blue, 25-50 %
             else:
-                color = (255, 0, 0) # red
+                color = (255, 0, 0) # red, 0-25%
             
             leds = [1, 2]
             # turn on leds
@@ -747,8 +755,14 @@ class Comminicator(MyThread, threading.Thread):
 #            logging.debug("Reading TCP data, timeout is " + str(self.conn.gettimeout()))
             data = self.conn.recv(1024)
             if not data:
+                logging.debug("TCP/IP connection loses.") 
+                self.conn = None
                 return None
-        except sc.timeout as e_time_out:
+        except sc.timeout:
+            return None
+        except sc.error:
+            logging.debug("TCP/IP connection loses.") 
+            self.conn = None
             return None
         
         # ignore \n or \r symbols
@@ -885,7 +899,7 @@ class Comminicator(MyThread, threading.Thread):
 
                             if time_set_res:
                                 self.send_message('ack', usb_type=False, ack_need=False)
-                                self.check_rpi_status_with_leds(1.0)
+                                self.show_rpi_status()
                             
                         except:
                             self.send_message('Something wrong with the time epoch', usb_type=False, ack_need=False)
@@ -901,6 +915,9 @@ class Comminicator(MyThread, threading.Thread):
                         
                     # get available space on rpi SD
                     if tcp_data == 'memory':
+                        bytes_, percen = self.shell.get_memory_available()
+                        self.send_message(str(bytes_), usb_type=False, ack_need=False)
+                        
                         self.set_user_activity()
                         self.show_rpi_status()
                     
