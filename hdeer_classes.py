@@ -1110,13 +1110,14 @@ class MyBuffer(object):
 class Camera_capture(MyThread, threading.Thread):
     # class for camera capturing into jpg files
     def __init__(self, name, storage_thread, path_to_save='/tmp', counter=0, 
-                 framerate=12, resolution=(640, 420), sleep_time=15.0):
+                 framerate=12, resolution=(800, 600), sleep_time=15.0, rotation=90):
         super(Camera_capture, self).__init__()
 #        threading.Thread.__init__(self)
         self.name = name
         self.path_to_save = path_to_save
         self.framerate = framerate
         self.resolution = resolution
+        self.rot = rotation
         
         self.counter = counter
         self.sleep_time = sleep_time
@@ -1156,6 +1157,7 @@ class Camera_capture(MyThread, threading.Thread):
             time.sleep(prep_time)
             camera.framerate = self.framerate
             camera.resolution = self.resolution
+            camera.rotation = self.rot
             file_name = join(self.path_to_save, 'img{:05d}.jpg'.format(self.counter))
             camera.capture(file_name, format='jpeg', quality = 70)
             
