@@ -33,7 +33,7 @@ class Sense_board(SenseHat):
         super(Sense_board, self).__init__()
 #        SenseHat.__init__(self)
         self.lock = threading.Lock()
-        self.active_leds = [(2,6), (2,4), (2,2)]
+        self.active_leds = [(3,5), (3,3), (3,1)]
     
     def get_measurment(self, m_type):
         # get sensor's values
@@ -489,6 +489,15 @@ class Comminicator(MyThread, threading.Thread):
         wake_, down_, in_between = self.calendar.get_sleep_up_time(in_epoch = True)                   
                     
         # prevent shutdown if rpi's current time is between wakeup and shutdown times
+        
+        if in_between and not force:
+            self.scheduled_shutdown = False
+            logging.debug("Shutdown canceled - between UP and DOWN time.")
+            return
+            
+        elif force:
+            self.scheduled_shutdown = 'run'
+
 
         while True:
             res = self.send_wakeup_time(wake_)
@@ -502,11 +511,7 @@ class Comminicator(MyThread, threading.Thread):
                 break
             time.sleep(0.5)
 
-        if in_between:
-            self.scheduled_shutdown = False
-            logging.debug("Shutdown canceled - between UP and DOWN time.")
-        elif force:
-            self.scheduled_shutdown = 'run'
+        
         
     
     def turnoff_rpi_power(self, after_seconds=20):
@@ -785,6 +790,7 @@ class Comminicator(MyThread, threading.Thread):
                 self.conn, addr = self.socket.accept()
                 logging.debug("Connected with TCP client from {:s} adress.".format(addr))
                 self.conn.settimeout(self.time_out_tcp)
+                self.send_message('Hi!\nPlease, type a command >', usb_type=False, ack_need=False)
 #                self.socket.setblocking(0)
             except sc.timeout as e:
                 return False
@@ -833,7 +839,7 @@ class Comminicator(MyThread, threading.Thread):
                     
                 if usb_line == 'trigger_time':
                     self.send_message('ack', ack_need=False)
-                    wake_, down_, in_between = self.calendar.get_sleep_up_time(in_epoch = True)
+#                    wake_, down_, in_between = self.calendar.get_sleep_up_time(in_epoch = True)
                     
                     if self.scheduled_shutdown:
                         self.prepare_to_shutdown_rpi(force=True)
@@ -983,7 +989,8 @@ class Comminicator(MyThread, threading.Thread):
             if self.user_activity is not None and not self.rpi_maint_mode:
                 if self.get_user_last_activity_tinterval() >= 10 * 60.0:
                     logging.debug("Self autoshutdown started")
-                    self.prepare_to_shutdown_rpi(force=True)
+                    self.user_activity = None
+                    self.prepare_to_shutdown_rpi(force=False)
 #                self.scheduled_shutdown = 'run'
             
             # get time from Arduino if Arduino's time is synchronized

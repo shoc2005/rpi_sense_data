@@ -531,7 +531,7 @@ class Communicator
       {
         serial_obj->send_message("ack");
         time_t time_ = (time_t)get_unix_time(msg, "sleep_time");
-        Serial.println((String)"Shutdown Time: " + time_to_str(time_));
+        //Serial.println((String)"Shutdown Time: " + time_to_str(time_));
         dateTime->set_shutdown_time(time_);
         trigger_req_counter = 0;
     
@@ -542,10 +542,10 @@ class Communicator
       {
         serial_obj->send_message("ack");
         time_t time_ = (time_t)get_unix_time(msg, "wakeup_time");
-        Serial.println((String)"Wakeup Time: " + time_to_str(time_));
+        //Serial.println((String)"Wakeup Time: " + time_to_str(time_));
         dateTime->set_wakeup_time(time_);
         trigger_req_counter = 0;
-        serial_obj->send_message("ack");
+        //serial_obj->send_message("ack");
       }
   
       if (msg.startsWith("curr_time")) {
