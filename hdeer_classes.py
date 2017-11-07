@@ -484,32 +484,40 @@ class Comminicator(MyThread, threading.Thread):
             
         return res
     
-    def prepare_to_shutdown_rpi(self, force=False):
+    def setup_triggers(self):
+        
+        wake_, down_, in_between = self.calendar.get_sleep_up_time(in_epoch = True)
+        logging.debug("Nearest time found: UP{:s}, down{:s}".format(str(wake_), str(down_)))
+        
+        counter = 1
+        while counter <= 5:
+            res = self.send_wakeup_time(wake_)
+            if res:
+                break
+            time.sleep(0.7)
+            counter += 1
+            
+        counter = 1 
+        while counter <= 5:
+            res = self.send_sleep_time(down_)
+            if res:
+                break
+            time.sleep(0.7)
+            counter += 1
+    
+    def prepare_to_shutdown_rpi(self):
 
         wake_, down_, in_between = self.calendar.get_sleep_up_time(in_epoch = True)                   
                     
         # prevent shutdown if rpi's current time is between wakeup and shutdown times
         
-        if in_between and not force:
+        if in_between:
             self.scheduled_shutdown = False
             logging.debug("Shutdown canceled - between UP and DOWN time.")
             return
             
-        elif force:
-            self.scheduled_shutdown = 'run'
-
-
-        while True:
-            res = self.send_wakeup_time(wake_)
-            if res:
-                break
-            time.sleep(0.5)
-            
-        while True:
-            res = self.send_sleep_time(down_)
-            if res:
-                break
-            time.sleep(0.5)
+        self.setup_triggers()
+        self.scheduled_shutdown = 'run'
 
         
         
@@ -842,9 +850,9 @@ class Comminicator(MyThread, threading.Thread):
 #                    wake_, down_, in_between = self.calendar.get_sleep_up_time(in_epoch = True)
                     
                     if self.scheduled_shutdown:
-                        self.prepare_to_shutdown_rpi(force=True)
-                    else:
                         self.prepare_to_shutdown_rpi()
+                    else:
+                        self.setup_triggers()
                     
 
                 if usb_line == 'current_status':
@@ -947,6 +955,7 @@ class Comminicator(MyThread, threading.Thread):
                         res = self.set_maint_mode(False)
                         if res:
                             self.send_message('ack', usb_type=False, ack_need=False)
+                            
                         
                         
 
@@ -990,7 +999,7 @@ class Comminicator(MyThread, threading.Thread):
                 if self.get_user_last_activity_tinterval() >= 10 * 60.0:
                     logging.debug("Self autoshutdown started")
                     self.user_activity = None
-                    self.prepare_to_shutdown_rpi(force=False)
+                    self.prepare_to_shutdown_rpi()
 #                self.scheduled_shutdown = 'run'
             
             # get time from Arduino if Arduino's time is synchronized
@@ -1304,7 +1313,7 @@ class Calendar(object):
         # returns the next nearest wakeup and sleep time
     
         up_time, down_time = self.get_nearest_up_time()
-        logging.debug("Nearest time found: UP{:s}, down{:s}".format(str(up_time), str(down_time)))
+#        logging.debug("Nearest time found: UP{:s}, down{:s}".format(str(up_time), str(down_time)))
         
         t_now = datetime.datetime.now()
 
