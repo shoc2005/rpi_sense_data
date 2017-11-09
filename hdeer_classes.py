@@ -14,6 +14,7 @@ from picamera import PiCamera
 from os.path import join
 from os import listdir
 from os.path import isdir
+from os.path import isfile
 from os import makedirs
 from os.path import exists
 import datetime
@@ -327,6 +328,28 @@ class Shell_executer(object):
         out, err = p.communicate()
         return out, err
     
+    def copy_files_via_ssh(self, host_ip, from_path, to_path, user_from = None, to_user = None):
+        # copy all files from the path to the path via the scp command tool for linux
+        
+        if to_user is None and user_from is None:
+            logging.debug("Error: using scp - from and to user parameter is None")
+            return False
+        
+        if user_from is not None:
+            cmd = 'scp -p -r {:s}@{:s}:{:s} {:s}'.format(user_from, host_ip, from_path, to_path)
+        elif to_user is not None:
+            cmd = 'scp -p -r {:s} {:s}@{:s}:{:s}'.format(from_path, to_user, host_ip, to_path)
+        
+        out, err = self.run(cmd)
+        
+        if len(err) > 0:
+            logging.debug("Error: using scp something is wrong with command: " + cmd)
+            return False
+        
+        return True
+   
+        
+    
     def get_memory_available(self, mount_point='/'):
         # returns mount point's available bytes % of usage
         
@@ -406,7 +429,8 @@ class Comminicator(MyThread, threading.Thread):
     
     
     
-    def __init__(self, storage, hat, usb_port='/dev/ardu', baudr=9600, usb_timeout=1.0, sense_threads = None):
+    def __init__(self, storage, hat, usb_port='/dev/ardu', baudr=9600, 
+                 usb_timeout=1.0, sense_threads = None, rpi_ip = ''):
         # class's constructor
 
 #        threading.Thread.__init__(self)
@@ -426,6 +450,7 @@ class Comminicator(MyThread, threading.Thread):
         # init USB connection with the Arduino
         
 #        self.shell.disable_dtr(usb_port)
+        
         self.serial = ps.Serial()
         self.serial.port = usb_port
         self.serial.baudrate = baudr
@@ -472,7 +497,8 @@ class Comminicator(MyThread, threading.Thread):
         pass
     
     def tcp_ip_listener(self):
-        # listen TCP connection messages from the host computer
+        # listen rpi and connect to it
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         pass
     
     def set_current_time(self, time):
@@ -628,14 +654,14 @@ class Comminicator(MyThread, threading.Thread):
         if bytes_ is not None:
             
             # Total 8Gb of 16Gb is available 50% in clean rpi
-            if percen >= 38:
-                color = (0, 255, 0) # green, 75-100 %
-            elif percen >= 26:
-                color = (255, 255, 0) # yellow, 50-75 %
-            elif percen >= 14:
-                color = (0, 128, 255) # blue, 25-50 %
+            if percen <= 75:
+                color = (0, 255, 0) # green, use 40-75 %
+            elif percen <= 83:
+                color = (255, 255, 0) # yellow, use 75-83 %
+            elif percen <= 91:
+                color = (0, 128, 255) # blue, use 83-91 %
             else:
-                color = (255, 0, 0) # red, 0-25%
+                color = (255, 0, 0) # red, use > 91 %
             
             leds = [1, 2]
             # turn on leds
@@ -1327,4 +1353,238 @@ class Calendar(object):
             return self.date2epoch(up_time), self.date2epoch(down_time), intersect
         else:
             return up_time, down_time, intersect
+
+class HostPC(threading.Thread):
+    # class for data copying fro the rpi in the local folder
+
+
+    def __init__(self, local_folder = '/home/hrpi/data_sync', rpi_ip = '192.162.0.5'):
+        super(HostPC, self).__init__()
+        
+        self.socket = sc.socket(sc.AF_INET, sc.SOCK_STREAM)
+        self.time_out_tcp = 0.1
+        self.socket.settimeout(self.time_out_tcp)
+        self.rpi_ip = rpi_ip
+        
+        self.conn = None
+        self.shell = Shell_executer()
+        self.local_folder = join(local_folder, 'logdata')
+        self.update_folder = join(local_folder, 'update')
+
+
+    def check_last_dir(self):
+        # check the last dump directory in the root path and creates one new
+        
+        # get list with directories in the root
+        dirnames_all = [dirname for dirname in listdir(self.local_folder) if isdir(join(self.local_folder, dirname))]
+        
+        # get last id
+        dump_ids = []
+        for name in dirnames_all:
+            vals = name.split('_') # directory name format: 'dump id dd.mm.yyyy'
+            if len(vals) == 3:
+                try:
+                    dump_ids.append(int(vals[1])) # add only id 
+                except:
+                    logging.debug("Something wrong with directory name format for dump files and images")
+        
+        # make new directory
+        if len(dump_ids) > 0:
+            max_id = max(dump_ids)
+            max_id += 1
+        else:
+            max_id = 1
+            
+        date = datetime.datetime.now()
+        dir_path = join(self.root_path, "data_{:d}_{:s}".format(max_id, date.strftime('%d.%m.%Y')))
+        makedirs(dir_path)
+        
+        # set permissions
+        new_mode = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
+        os.chmod(dir_path, new_mode)
+            
+        return dir_path
+    
+    def get_data_from_rpi(self, save_to):
+        
+        return self.shell.copy_files_via_ssh(self.rpi_ip, '/home/pi/sources/data/*', save_to,  from_user = 'pi')
+    
+    def update_rpi(self):
+        
+        # check if any files need to be updated on the host and rpi
+        files_all = [file_name for file_name in listdir(self.update_folder) if isfile(join(self.update_folder, file_name))]
+        
+        if len(files_all) > 0:
+            save_to = '/home/pi/hdeer'
+            res1 = self.shell.copy_files_via_ssh(self.rpi_ip, join(self.update_folder, '*.py'), save_to,  to_user = 'pi')
+            res2 = self.shell.copy_files_via_ssh(self.rpi_ip, join(self.update_folder, '*.txt'), save_to,  to_user = 'pi')
+            
+            if not res:
+                logging.debug("Error: updating rpi")
+                return False
+        
+            curr_dir = os.path.dirname(os.path.abspath(__file__))
+            res1 = self.shell.run('cp ' + join(self.update_folder, '*.py') + ' ' + curr_dir)
+            
+            if not res1:
+                logging.debug("Error: updating host")
+                return False
+                
+            res2 = self.shell.run('rm ' + join(self.update_folder, '*'))
+            if not res2:
+                logging.debug("Error: deleting update files from sync folder")
+                return False
+
+        return True
+        
+            
+    
+    def get_logs_from_rpi(self, save_to):
+        
+        return self.shell.copy_files_via_ssh(self.rpi_ip, '/home/pi/hdeer/hdeer.log', save_to,  from_user = 'pi')
+
+    def send_message(self, message, ack_need=True, ack_msg = 'ack'):
+        # send message to the Ardu
+        
+
+        if self.conn is None:
+            logging.debug("Error: No TCP connection with Host!")
+            return False
+            
+        bytes_ = self.conn.send(message + '\n')            
+        logging.debug("Sent msg to rpi: "+ message)
+            
+        if ack_need:
+            
+            
+            # try to send message
+            t1 = time.time()            
+            while time.time() - t1 <= 60: # try 3 times
+
+                answ = self.read_tcp_data()
+                answ = answ.translate(None, chr(10)+chr(13))
+                logging.debug("Got msg from TCP/IP client: "+ answ)
+                    
+                if answ == ack_msg:
+                    return True
+                
+                # sleep
+                time.sleep(1)
+
+            
+            return False # if no 'ack' recieved during 3 trials
+        else: # counts bytes sent
+            if bytes_ == len(message) + 1:
+                return True
+            else:
+                return False
+
+
+    def read_tcp_data(self):
+        # reads data from the TCP port
+        
+        try:
+            data = self.conn.recv(1024)
+            if not data:
+                logging.debug("TCP/IP connection loses.") 
+                self.conn = None
+                return None
+        except sc.timeout:
+            return None
+        except sc.error:
+            logging.debug("TCP/IP connection loses.") 
+            self.conn = None
+            return None
+        
+        # ignore \n or \r symbols
+        line = ''
+        for byte in data:
+            if not(ord(byte) == 13 or ord(byte) == 10):
+                line += byte
+            else:
+                return line
+        
+        return line
+    
+    def run(self):
+        
+        while True:         
+            try:
+                self.socket.connect(self.rpi_ip)
+                _ = self.read_tcp_data()
+            except:
+                time.sleep(1.0)
+                continue
+            
+            if self.send_message('enable_maint'):
+                logging.debug("Enable rpi & ardu maint - OK")
+            else:
+                logging.debug("Enable rpi & ardu maint - FAILED")
+                break
+                
+            new_folder = self.check_last_dir()
+            to_path = join(self.local_folder, new_folder)
+            
+            if self.get_data_from_rpi(to_path):
+                logging.debug("All files were coppied from the rpi - OK")
+            else:
+                logging.debug("All files were coppied from the rpi - FAILED")
+                break
+ 
+            to_path_log = join(self.local_folder, to_path, 'process.log')
+            if self.get_logs_from_rpi(to_path_log):
+                logging.debug("The log file was coppied from the rpi - OK")
+            else:
+                logging.debug("The log file was coppied from the rpi - FAILED")
+                break
+            
+            if self.send_message('clean_rpi', ack_msg='done'):
+                logging.debug("The rpi cleaned up - OK")
+            else:
+                logging.debug("The rpi cleaned up - FAILED")
+                break
+            
+            if self.update_rpi():
+                logging.debug("The rpi and host update - OK")
+            else:
+                logging.debug("The rpi and host update - FAILED")
+                break
+            
+            epoch = self.shell.get_system_time_epoch()            
+            if self.send_message('time_synch:{:s}'.format(epoch)):
+                logging.debug("Time is synchronized - OK")
+            else:
+                logging.debug("Time is synchronized - FAILED")
+                break
+            
+            if self.send_message('disable_maint&shutdown'):
+                logging.debug("Maintenance mode was disabled for the rpi and ardu - OK")
+            else:
+                logging.debug("Maintenance mode was disabled for the rpi and ardu - FAILED")
+                break
+            
+            logging.debug("Data synch is done!!!")
+            self.socket.close()
+            
+            return True
+    
+        # try to restore RPI
+        epoch = self.shell.get_system_time_epoch()            
+        if self.send_message('time_synch:{:s}'.format(epoch)):
+            logging.debug("Restore: time is synchronized - OK")
+        else:
+            logging.debug("Restore time is synchronized - FAILED")
+        
+        if self.send_message('disable_maint'):
+            logging.debug("Restore: maint disabled - OK")
+        else:
+            logging.debug("Restore: maint disabled - FAILED")
+        
+        self.socket.close()
+        
+        return False
+            
+            
+
+                
     
