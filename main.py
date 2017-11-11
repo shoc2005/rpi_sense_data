@@ -13,16 +13,19 @@ from os.path import join
 
 curr_dir = os.path.dirname(os.path.abspath(__file__))
 
-
 # set debug output format
 logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s (%(threadName)-10s) %(message)s',
                     datefmt='%d.%m.%Y %H:%M:%S',
                     filename=join(curr_dir, 'hdeer.log')
                     )
+                    
 # Create new threads
 sense = hdc.Sense_board()
-storage_thread = hdc.Data_storage('/home/pi/sources/data')
+index = os.environ.get('RPI_INDEX')
+if index is None:
+    index = 'undefined'
+storage_thread = hdc.Data_storage('/home/pi/sources/data', index=index)
 
 
 
@@ -65,5 +68,6 @@ for t in threading.enumerate():
     logging.debug('joining %s', t.getName())
     t.join()
 
+#logging.debug("Exiting")
 #thread1.join(14.5)
 #thread2.join()
