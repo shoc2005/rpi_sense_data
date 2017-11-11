@@ -1557,7 +1557,7 @@ class HostPC(threading.Thread):
         while True:         
             try:
                 self.socket = sc.socket(sc.AF_INET, sc.SOCK_STREAM)
-                self.time_out_tcp = 0.01
+                self.time_out_tcp = 0.1
                 self.socket.settimeout(self.time_out_tcp)     
                 self.socket.connect((self.rpi_ip, self.port))
             except sc.timeout as e:
@@ -1637,6 +1637,7 @@ class HostPC(threading.Thread):
             self.beep()
             time.sleep(0.5)
             self.beep()
+            self.shell.shutdown()
             break
         logging.debug("Exiting")
         return True

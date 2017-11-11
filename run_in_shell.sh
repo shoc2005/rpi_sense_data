@@ -11,5 +11,12 @@
 if [ $1 -eq $1 2> /dev/null ]; then
 	date -s @$1
 else
+    if [ "$1" = "down" ]; then 
      init 0
+    fi
+
+    if [ "$1" = "reboot" ]; then
+     reboot
+    fi 
+    
 fi
