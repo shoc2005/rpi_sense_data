@@ -5,14 +5,11 @@ Created on Thu Nov 09 16:46:40 2017
 @author: sholc2005
 """
 
-import hdeer_classes as hdc
+
 import logging
 import threading
-import os
+#import os
 from os.path import join
-
-curr_dir = os.path.dirname(os.path.abspath(__file__))
-
 
 # set debug output format
 logging.basicConfig(level=logging.DEBUG,
@@ -20,9 +17,11 @@ logging.basicConfig(level=logging.DEBUG,
                     datefmt='%d.%m.%Y %H:%M:%S',
                     filename=join('/home/hrpi/data_sync', 'host.log')
                     )
-
+import hdeer_classes as hdc
 thread1 = hdc.HostPC()
-thread1.setDaemon(True)
+
+logging.debug('Started')
+#thread1.setDaemon(True)
 
 thread1.start()
 

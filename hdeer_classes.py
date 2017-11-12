@@ -409,6 +409,7 @@ class Shell_executer(object):
         out, err = self.run('sudo {:s} {:d}'.format(join(curr_path, 'run_in_shell.sh'), time_epoch))
         logging.debug("Run set system time in bash script, the output:"+ out)
         if len(err) > 0:
+            logging.debug("Error (run set system time): " + err)
             return False
         
         return True
@@ -736,7 +737,7 @@ class Comminicator(MyThread, threading.Thread):
                     return True
                 
                 # sleep
-                time.sleep(0.1)
+                time.sleep(0.3)
                 
                 n += 1
             
@@ -820,6 +821,7 @@ class Comminicator(MyThread, threading.Thread):
                 self.conn = None
                 return None
         except sc.timeout:
+#            logging.debug("TCP/IP connection timeout.") 
             return None
         except sc.error:
             logging.debug("TCP/IP connection loses.") 
@@ -834,6 +836,7 @@ class Comminicator(MyThread, threading.Thread):
             else:
                 return line
         
+        
         return line
         
     
@@ -842,7 +845,7 @@ class Comminicator(MyThread, threading.Thread):
         
         if self.conn is None:
             try:
-                self.socket.listen(1)
+                self.socket.listen(5)
                 self.conn, addr = self.socket.accept()
                 logging.debug("Connected with TCP client from {:s} adress.".format(addr))
                 self.conn.settimeout(self.time_out_tcp)
@@ -1013,6 +1016,8 @@ class Comminicator(MyThread, threading.Thread):
                         if res:
                             self.set_maint_mode(False)
                             self.scheduled_shutdown = True
+#                            time.sleep(2.0)
+#                            continue
                         
                         
 
@@ -1392,6 +1397,7 @@ class HostPC(threading.Thread):
 #        self.time_out_tcp = 0.01
 #        self.socket.settimeout(self.time_out_tcp)        
         self.rpi_ip = rpi_ip
+        self.rpi_names  = ['rpiA', 'rpiB'] # ssh aliases defined in the config file of .ssh dir on the host
 #        self.socket.bind((self.rpi_ip, self.port))
         
         self.conn = None
@@ -1433,9 +1439,14 @@ class HostPC(threading.Thread):
             
         return dir_path
     
-    def get_data_from_rpi(self, save_to):
+    def get_data_from_rpi(self, save_to, files = ''):
         
-        return self.shell.copy_files_via_ssh(self.rpi_ip, '/home/pi/sources/data/*.*', save_to,  from_user = 'pi')
+        for name in self.rpi_names:
+            res = self.shell.copy_files_via_ssh(name, files, save_to,  from_user = 'pi')
+            if res:
+                break
+        
+        return res
     
     def check_for_update(self):
         
@@ -1458,10 +1469,10 @@ class HostPC(threading.Thread):
             # update the RPI
             save_to = '/home/pi/hdeer'
             
-#            if os.path.exists()
-            
-            res1 = self.shell.copy_files_via_ssh(self.rpi_ip, join(self.update_folder, '*.*'), save_to,  to_user = 'pi')
-#            res2 = self.shell.copy_files_via_ssh(self.rpi_ip, join(self.update_folder, '*.txt'), save_to,  to_user = 'pi')
+            for name in self.rpi_names:
+                res1 = self.shell.copy_files_via_ssh(name, join(self.update_folder, '*.*'), save_to,  to_user = 'pi')
+                if res1:
+                    break
             
             if not res1:
                 logging.debug("Error: updating rpi")
@@ -1474,19 +1485,14 @@ class HostPC(threading.Thread):
             if not res1:
                 logging.debug("Error: updating host")
                 return False
-                
-            res2 = self.shell.run('rm ' + join(self.update_folder, '*.*'))
-            if not res2:
-                logging.debug("Error: deleting update files from sync folder")
-                return False
 
         return True
         
             
     
-    def get_logs_from_rpi(self, save_to):
+#    def get_logs_from_rpi(self, save_to):
         
-        return self.shell.copy_files_via_ssh(self.rpi_ip, '/home/pi/hdeer/hdeer.log', save_to,  from_user = 'pi')
+#        return self.shell.copy_files_via_ssh(self.rpi_ip, '/home/pi/hdeer/hdeer.log', save_to,  from_user = 'pi')
 
     def send_message(self, message, ack_need=True, ack_msg = 'ack'):
         # send message to the Ardu
@@ -1503,6 +1509,11 @@ class HostPC(threading.Thread):
             # try to send message
             t1 = time.time()            
             while time.time() - t1 <= 60: # try 3 times
+            
+                if int(time.time() - t1) % 10 == 0:      
+                    bytes_ = self.socket.send(message + '\n')            
+                    logging.debug("Next try: sent msg to the rpi: "+ message)
+                    time.sleep(0.8)
 
                 answ = self.read_tcp_data()
                 if answ == '' or answ is None:
@@ -1540,6 +1551,8 @@ class HostPC(threading.Thread):
             logging.debug("TCP/IP connection loses.") 
 #            self.conn = None
             return None
+        except:
+            return None
         
         # ignore \n or \r symbols
         line = ''
@@ -1554,26 +1567,28 @@ class HostPC(threading.Thread):
     def run(self):
         logging.debug("Running..")
         
+        self.socket = sc.socket(sc.AF_INET, sc.SOCK_STREAM)
+        self.time_out_tcp = 0.2
+        self.socket.settimeout(self.time_out_tcp)
         while True:         
             try:
-                self.socket = sc.socket(sc.AF_INET, sc.SOCK_STREAM)
-                self.time_out_tcp = 0.1
-                self.socket.settimeout(self.time_out_tcp)     
+                
+                    
                 self.socket.connect((self.rpi_ip, self.port))
-            except sc.timeout as e:
+#            except sc.timeout as e:
 #                logging.debug("Connection timeout.")
-                time.sleep(1.0)
-                continue
+#                time.sleep(1.0)
+#                continue
             except sc.error as e1:
-                logging.debug("Can't connect to the rpi: " + str(e1))
-                time.sleep(1.0)
+#                logging.debug("Can't connect to the rpi: " + str(e1))
+#                time.sleep(0.01)
                 continue
             
             logging.debug('Connected to the rpi!')
             time.sleep(1.0)
             _ = self.read_tcp_data()
-            _ = self.read_tcp_data()
-            _ = self.read_tcp_data()
+#            _ = self.read_tcp_data()
+#            _ = self.read_tcp_data()
             
             if self.send_message('enable_maint'):
                 logging.debug("Enable rpi & ardu maint - OK")
@@ -1585,7 +1600,7 @@ class HostPC(threading.Thread):
             new_folder = self.check_last_dir()
             to_path = join(self.local_folder, new_folder)
             
-            if self.get_data_from_rpi(to_path):
+            if self.get_data_from_rpi(to_path, files='/home/pi/sources/data/*.*'):
                 logging.debug("All files were coppied from the rpi - OK")
             else:
                 logging.debug("All files were coppied from the rpi - FAILED")
@@ -1619,7 +1634,7 @@ class HostPC(threading.Thread):
                 break
             
             to_path_log = join(to_path, 'hdeer.log')
-            if self.get_logs_from_rpi(to_path_log):
+            if self.get_data_from_rpi(to_path_log, files='/home/pi/hdeer/hdeer.log'):
                 logging.debug("The log file was coppied from the rpi - OK")
             else:
                 logging.debug("The log file was coppied from the rpi - FAILED")
@@ -1632,15 +1647,25 @@ class HostPC(threading.Thread):
                 logging.debug("Maintenance mode was disabled for the rpi and ardu - FAILED")
                 break
             
+            if self.send_message('logout', ack_need=False):
+                logging.debug("Logout - OK")
+                self.socket.close()
+            else:
+                logging.debug("Logout - FAILED")
+            
             logging.debug("Data synch is done!!!")
-            self.socket.close()
+            
             self.beep()
             time.sleep(0.5)
             self.beep()
-            self.shell.shutdown()
+            logging.debug("Exiting")
+#            self.shell.shutdown()
+            
+            return True
+            
             break
-        logging.debug("Exiting")
-        return True
+        
+#        return True
     
         # try to restore RPI
         epoch = self.shell.get_system_time_epoch()            
@@ -1657,6 +1682,7 @@ class HostPC(threading.Thread):
         
         self.socket.close()
         logging.debug("Conncetion closed")
+        logging.debug("Exiting")
         
         return False
             
