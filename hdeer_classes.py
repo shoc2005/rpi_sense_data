@@ -1659,7 +1659,8 @@ class HostPC(threading.Thread):
             time.sleep(0.5)
             self.beep()
             logging.debug("Exiting")
-#            self.shell.shutdown()
+            time.sleep(10.0)
+            self.shell.shutdown()
             
             return True
             
