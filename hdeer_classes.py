@@ -4,11 +4,14 @@ HungryDeer
 
 """
 
+
 import threading
 import subprocess
 import time
 import logging
 #import sys
+
+logging.debug("Importing SenseHat and PiCamera modules.")
 
 try:
     from sense_hat import SenseHat
@@ -536,35 +539,38 @@ class Comminicator(MyThread, threading.Thread):
     def setup_triggers(self):
         
         wake_, down_, in_between = self.calendar.get_sleep_up_time(in_epoch = True)
-        logging.debug("Nearest time found: UP{:s}, down{:s}".format(str(wake_), str(down_)))
         
-        counter = 1
-        while counter <= 5:
-            res = self.send_wakeup_time(wake_)
-            if res:
-                break
-            time.sleep(0.7)
-            counter += 1
-            
-        counter = 1 
-        while counter <= 5:
-            res = self.send_sleep_time(down_)
-            if res:
-                break
-            time.sleep(0.7)
-            counter += 1
+                                                                  
+        wake_d, down_d, _ = self.calendar.get_sleep_up_time(in_epoch = False)
+        logging.debug("Nearest time found: UP{:s}, down{:s}".format(self.calendar.get_datetime_str(wake_d), 
+                                                                  self.calendar.get_datetime_str(down_d)))
+        
+        # synch time to Ardu
+        self.get_current_time()
+        time.sleep(3.0)
+        
+        # set wakeup time
+        self.send_wakeup_time(wake_)
+        time.sleep(2.0)
+        
+        # set shutdown time
+        self.send_sleep_time(down_)
+        time.sleep(2.0)
+        
     
     def prepare_to_shutdown_rpi(self):
 
         wake_, down_, in_between = self.calendar.get_sleep_up_time(in_epoch = True)                   
                     
         # prevent shutdown if rpi's current time is between wakeup and shutdown times
-        
         if in_between:
             self.scheduled_shutdown = False
-            logging.debug("Shutdown canceled - between UP and DOWN time.")
+            wake_, down_, in_between = self.calendar.get_sleep_up_time(in_epoch = False) 
+            logging.debug("Shutdown canceled - between UP={:s} and DOWN={:s}.".format(self.calendar.get_datetime_str(wake_), 
+                                                                                      self.calendar.get_datetime_str(down_)))
             return
-            
+        
+        # set up Ardu down and up time
         self.setup_triggers()
         self.scheduled_shutdown = 'run'
 
@@ -593,15 +599,12 @@ class Comminicator(MyThread, threading.Thread):
         if self.time_synchronized:
             if epoch:
                 time_epoch = self.shell.get_system_time_epoch()
-                while True:
-                    res = self.send_message('time_synch:{:d}'.format(time_epoch))
-                    if res:
-                        break
-                    time.sleep(0.2)
-                    
-                return True
-            else:
-                return False
+#                while True:
+                res = self.send_message('time_synch:{:d}'.format(time_epoch))
+                if res:     
+                    return True
+                else:
+                    return False
         else:
             return False
     
@@ -641,10 +644,12 @@ class Comminicator(MyThread, threading.Thread):
     def shutdown_rpi(self, force=False):
         # stops all threads and shutdown Rpi
         
+        # schedule Rpi power off after 20 seconds
         if not force:
             self.turnoff_rpi_power(20)
-            time.sleep(1.2)
-            
+            time.sleep(2.0)
+        
+        # force threads stop and shutdown RPI's OS
         for sense_thread in self.sense_threads:
             sense_thread.m_stop(sense_thread.getName())
             while not sense_thread.m_stopped():
@@ -698,17 +703,17 @@ class Comminicator(MyThread, threading.Thread):
         t2.start()
     
     
-    def send_message(self, message, usb_type=True, ack_need=True):
+    def send_message(self, message, usb_type=True, ack_need=True, ack_msg='ack'):
         # send message to the Ardu
         
         if usb_type:
             if self.serial is None:
                 logging.debug("Error: No USB connection with Ardu!")
                 return False
+                
             bytes_ = self.serial.write(message + '\n')
             time.sleep(0.2)
-            
-            logging.debug("Send msg to USB: "+ message)
+            logging.debug("Send msg to USB: " + message)
         else:
             if self.conn is None:
                 logging.debug("Error: No TCP connection with Host!")
@@ -733,11 +738,11 @@ class Comminicator(MyThread, threading.Thread):
                     answ = answ.translate(None, chr(10)+chr(13))
                     logging.debug("Got msg from TCP/IP client: "+ answ)
                     
-                if answ == 'ack':
+                if answ == ack_msg:
                     return True
                 
                 # sleep
-                time.sleep(0.3)
+                time.sleep(0.5)
                 
                 n += 1
             
@@ -775,13 +780,11 @@ class Comminicator(MyThread, threading.Thread):
                 self.rpi_maint_mode = True
                 self.time_synchronized = False
             
-                # pause sensing threads on the rpi
+                # pause threads on the rpi
                 for sense_thread in self.sense_threads:
                     sense_thread.m_pause(sense_thread.getName())
                     while not sense_thread.m_paused():
-                        time.sleep(0.05)
-#                    logging.debug("Paused")
-                
+                        time.sleep(0.05)               
                 return True
             return False
                     
@@ -876,6 +879,7 @@ class Comminicator(MyThread, threading.Thread):
         # get messages from the USB or TCP port and switch data flow
         
         t1 = time.time()
+        time_synchronized_asked = False
         
         while True:
             # read USB data
@@ -898,16 +902,12 @@ class Comminicator(MyThread, threading.Thread):
                     
                 if usb_line == 'trigger_time':
                     self.send_message('ack', ack_need=False)
-#                    wake_, down_, in_between = self.calendar.get_sleep_up_time(in_epoch = True)
                     
-                    if self.scheduled_shutdown:
-                        self.prepare_to_shutdown_rpi()
-                    else:
-                        self.setup_triggers()
-                    
+                    self.setup_triggers()
+                    continue
 
                 if usb_line == 'current_status':
-                    self.set_user_activity()
+                    self.set_user_activity() # user pushed black button for check rpi's current status
                     
                     self.send_message('ack', ack_need=False)
                     self.show_rpi_status()
@@ -921,8 +921,8 @@ class Comminicator(MyThread, threading.Thread):
                         
                     self.send_message('ack', ack_need=False)
                     self.scheduled_shutdown = True
+                    continue
                     
-#                    self.prepare_to_shutdown_rpi()               
                     
                 
                 if usb_line.find('curr_time') == 0 and len(usb_line) > 11 and not self.time_synchronized:
@@ -933,7 +933,7 @@ class Comminicator(MyThread, threading.Thread):
                         for sense_thread in self.sense_threads:
                             for t in threading.enumerate():
                                 if t.getName() == sense_thread.getName():
-                                   t.m_reset_pause(t.getName())
+                                   t.m_reset_pause(t.getName()) # run thread
                                    time.sleep(0.5)
                         self.rpi_maint_mode = False
                         self.ardu_maint_mode = False
@@ -955,12 +955,11 @@ class Comminicator(MyThread, threading.Thread):
                     
                     # synch time from the host computer
                     if tcp_data.find("time_synch") >=0:
-                        self.set_user_activity()
                         try:
                             time_epoch = long(tcp_data[tcp_data.find("time_synch") + 11:])
                             
                             time_set_res = self.set_current_time(time_epoch)
-                            
+                            self.set_user_activity() # update user's last activity time
 
                             if time_set_res:
                                 self.send_message('ack', usb_type=False, ack_need=False)
@@ -1016,11 +1015,7 @@ class Comminicator(MyThread, threading.Thread):
                         if res:
                             self.set_maint_mode(False)
                             self.scheduled_shutdown = True
-#                            time.sleep(2.0)
-#                            continue
-                        
-                        
-
+                            continue
                             
                     if tcp_data == 'curr_time':
                         self.set_user_activity()
@@ -1049,23 +1044,29 @@ class Comminicator(MyThread, threading.Thread):
                             logging.debug(str(on) + " " + str(off))
             
             if self.user_activity is not None and not self.rpi_maint_mode:
-                if self.get_user_last_activity_tinterval() >= 10 * 60.0:
-                    logging.debug("Self autoshutdown started")
+                if self.get_user_last_activity_tinterval() >= 5 * 60.0: # 5 minutes
+                    logging.debug("Self autoshutdown started after {:0.0f}s from the last user activity.".format(self.get_user_last_activity_tinterval()))
                     self.user_activity = None
                     self.prepare_to_shutdown_rpi()
 #                self.scheduled_shutdown = 'run'
             
             # get time from Arduino if Arduino's time is synchronized
-            if not self.time_synchronized and time.time() - t1 >= 5.0:
-                self.send_message('get_ardu_time')
+            if not self.time_synchronized and time.time() - t1 >= 5.0 and not time_synchronized_asked:
+                # only ask once about ardu time is ack 
+                ack = self.send_message('get_ardu_time')
+                if ack:
+                    time_synchronized_asked = True
                 t1 = time.time()
+
+            if self.scheduled_shutdown:
+                self.prepare_to_shutdown_rpi()
             
+            # schedule rpi power of and rpi's OS shutdowns
             if self.scheduled_shutdown == 'run':
                 self.scheduled_shutdown = False
-                
                 self.shutdown_rpi(force=False)
 
-                    
+
         
     
     def push_rpi_data(self):
@@ -1265,7 +1266,7 @@ class Data_storage(object):
                 if self.dump_path == full_path:
                     continue
                 
-                logging.debug("Deleting " + full_path)
+#                logging.debug("Deleting " + full_path)
                 if isdir(full_path):
                     shutil.rmtree(full_path)
                 else:
@@ -1329,11 +1330,16 @@ class Calendar(object):
         off_time = datetime.datetime.strptime(date_s + time_off_s, '%d.%m.%Y%H:%M')
         
         self.up_event_times.append((on_time, off_time))
+    
+    def get_datetime_str(self, datetime_obj):
+        # returns formated date time string
+    
+        return datetime_obj.strftime('%d.%m.%Y%H:%M')
 
     def get_nearest_up_time(self):
         
         if len(self.up_event_times) == 0:
-            logging.debug("Calendar is not loaded")
+            logging.debug("The calendar is not loaded!")
             return None
         
         
@@ -1342,14 +1348,16 @@ class Calendar(object):
         nearest = None
         
         for uptime, downtime in self.up_event_times:
-#            logging.debug("Processing: " + str(uptime))
+
+            # check if current time is between uptime and downtime and retur those
             if (curr_time >= uptime + datetime.timedelta(seconds = 30) and curr_time < downtime - datetime.timedelta(seconds = 30)):
                 nearest = (uptime, downtime)
                 break
         
-            if uptime > curr_time:
+            if curr_time < uptime:
                 diff = uptime - curr_time
                 
+                # comparision with toward uptime
                 if diff.total_seconds() < nearest_diff or nearest_diff is None:
                     nearest_diff = diff.total_seconds()
                     nearest = (uptime, downtime)
@@ -1427,13 +1435,13 @@ class HostPC(threading.Thread):
             max_id = max(dump_ids)
             max_id += 1
         else:
-            max_id = 1
+            max_id = 1 # start numbering from one
             
         date = datetime.datetime.now()
         dir_path = join(self.local_folder, "data_{:d}_{:s}".format(max_id, date.strftime('%d.%m.%Y')))
         makedirs(dir_path)
         
-        # set permissions
+        # set full permissions
         new_mode = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
         os.chmod(dir_path, new_mode)
             
@@ -1467,73 +1475,56 @@ class HostPC(threading.Thread):
             
         if self.check_for_update():
             # update the RPI
+        
             save_to = '/home/pi/hdeer'
             
+            # update the rpi
             for name in self.rpi_names:
-                res1 = self.shell.copy_files_via_ssh(name, join(self.update_folder, '*.*'), save_to,  to_user = 'pi')
-                if res1:
+                res = self.shell.copy_files_via_ssh(name, join(self.update_folder, '*.*'), save_to,  to_user = 'pi')
+                if res:
                     break
             
-            if not res1:
-                logging.debug("Error: updating rpi")
-                return False
+            if not res:
+                logging.debug("Error: updating the rpi")
+
         
             # update host
             curr_dir = os.path.dirname(os.path.abspath(__file__))
-            res1 = self.shell.run('cp ' + join(self.update_folder, '*.py') + ' ' + curr_dir)
+            res = self.shell.run('cp ' + join(self.update_folder, '*.py') + ' ' + curr_dir)
             
-            if not res1:
-                logging.debug("Error: updating host")
-                return False
-
-        return True
-        
-            
-    
-#    def get_logs_from_rpi(self, save_to):
-        
-#        return self.shell.copy_files_via_ssh(self.rpi_ip, '/home/pi/hdeer/hdeer.log', save_to,  from_user = 'pi')
+            if not res:
+                logging.debug("Error: updating the host")
 
     def send_message(self, message, ack_need=True, ack_msg = 'ack'):
         # send message to the Ardu
-
-#        if self.conn is None:
-#            logging.debug("Error: No TCP connection with Host!")
-#            return False
+ 
+        t1 = time.time() # get current timestamp
+        
+        while ((time.time() - t1) <= 10):
+            bytes_ = self.socket.send(message + '\n')
+            logging.debug("Sent the msg to the rpi and wait for the ack: " + message)
             
-        bytes_ = self.socket.send(message + '\n')            
-        logging.debug("Sent msg to the rpi: "+ message)
-            
-        if ack_need:
-                  
-            # try to send message
-            t1 = time.time()            
-            while time.time() - t1 <= 60: # try 3 times
-            
-                if int(time.time() - t1) % 10 == 0:      
-                    bytes_ = self.socket.send(message + '\n')            
-                    logging.debug("Next try: sent msg to the rpi: "+ message)
-                    time.sleep(0.8)
-
+            if ack_need:
+                time.sleep(0.1)
                 answ = self.read_tcp_data()
-                if answ == '' or answ is None:
-                    time.sleep(1.0)
-                    continue
-                answ = answ.translate(None, chr(10)+chr(13))
-                logging.debug("Got msg from TCP/IP client: "+ answ)
-                    
-                if answ == ack_msg:
-                    return True
                 
-                # sleep
-                time.sleep(1.0)
-            
-            return False # if no 'ack' recieved during 3 trials
-        else: # counts bytes sent
-            if bytes_ == len(message) + 1:
-                return True
+                answ = answ.translate(None, chr(10)+chr(13))
+                if answ == ack_msg:
+                    logging.debug("Message sent successfully, got ack.")
+                    return True
+                else:
+                    logging.debug("Something wrong with communication: " + str(answ))
             else:
-                return False
+                if bytes_ == len(message) + 1:
+                    logging.debug("Message sent successfully.")
+                    return True
+                else:
+                    logging.debug("Something wrong with communication: " + message)
+            
+            time.sleep(0.5) # sleep 0.5s and repeart
+        
+        logging.debug("Message send failed because of try timeout.")
+        return False
 
 
     def read_tcp_data(self):
@@ -1571,81 +1562,89 @@ class HostPC(threading.Thread):
         self.time_out_tcp = 0.2
         self.socket.settimeout(self.time_out_tcp)
         while True:         
-            try:
-                
-                    
+            try:  
                 self.socket.connect((self.rpi_ip, self.port))
-#            except sc.timeout as e:
-#                logging.debug("Connection timeout.")
-#                time.sleep(1.0)
-#                continue
+
             except sc.error as e1:
-#                logging.debug("Can't connect to the rpi: " + str(e1))
-#                time.sleep(0.01)
                 continue
             
             logging.debug('Connected to the rpi!')
-            time.sleep(1.0)
-            _ = self.read_tcp_data()
-#            _ = self.read_tcp_data()
-#            _ = self.read_tcp_data()
             
+            time.sleep(1.0)
+
+            # enable maintenance mode 
             if self.send_message('enable_maint'):
                 logging.debug("Enable rpi & ardu maint - OK")
             else:
                 logging.debug("Enable rpi & ardu maint - FAILED")
-                break
-            time.sleep(2.0)
-                
-            new_folder = self.check_last_dir()
-            to_path = join(self.local_folder, new_folder)
+                self.socket.close()
+                logging.debug("Restarting data copying and time synch...")
+                continue
             
+            time.sleep(1.0)
+            
+            # created new dump dir                 
+            to_path = self.check_last_dir()
+            logging.debug("Created new directory for file copy: ", to_path);
+
+            # copy all dump files from the rpi
             if self.get_data_from_rpi(to_path, files='/home/pi/sources/data/*.*'):
                 logging.debug("All files were coppied from the rpi - OK")
             else:
                 logging.debug("All files were coppied from the rpi - FAILED")
-                break
- 
-            
-            
+                logging.debug("Restarting data copying and time synch...")
+                continue
+                    
             time.sleep(1.0)
+            
+            # cleaning the rpi
             if self.send_message('clean_rpi', ack_msg='done'):
                 logging.debug("The rpi cleaned up - OK")
             else:
                 logging.debug("The rpi cleaned up - FAILED")
-                break
+                logging.debug("Restarting data copying and time synch...")
+                continue
             
             time.sleep(1.0)
+            
+            # updating files of the rpi
             if self.check_for_update():
                 if self.update_rpi():
                     logging.debug("The rpi and host update - OK")
-                else:
-                    logging.debug("The rpi and host update - FAILED")
-                    break
             else:
                 logging.debug("The rpi and host update - nothing to update")
             
             time.sleep(1.0)
-            epoch = self.shell.get_system_time_epoch()            
-            if self.send_message('time_synch:{:d}'.format(epoch)):
-                logging.debug("Time is synchronized - OK")
-            else:
-                logging.debug("Time is synchronized - FAILED")
-                break
             
+            # synchronizing time with the rpi
+            epoch = self.shell.get_system_time_epoch()
+            if type(epoch) is not long:
+                logging.debug("Time's epoch getting failed!")
+            if self.send_message('time_synch:{:d}'.format(epoch)):
+                logging.debug("Send time epoch - OK")
+            else:
+                logging.debug("Send time epoch - FAILED")
+                logging.debug("Restarting data copying and time synch...")
+                continue
+            
+            time.sleep(1.0)            
+            
+            # get log file from the rpi
             to_path_log = join(to_path, 'hdeer.log')
             if self.get_data_from_rpi(to_path_log, files='/home/pi/hdeer/hdeer.log'):
                 logging.debug("The log file was coppied from the rpi - OK")
             else:
                 logging.debug("The log file was coppied from the rpi - FAILED")
-                break
             
             time.sleep(1.0)
+            
+            #disable maintenance
             if self.send_message('disable_maint&shutdown'):
                 logging.debug("Maintenance mode was disabled for the rpi and ardu - OK")
             else:
                 logging.debug("Maintenance mode was disabled for the rpi and ardu - FAILED")
-                break
+                logging.debug("Restarting data copying and time synch...")
+                continue
             
             if self.send_message('logout', ack_need=False):
                 logging.debug("Logout - OK")
@@ -1654,40 +1653,18 @@ class HostPC(threading.Thread):
                 logging.debug("Logout - FAILED")
             
             logging.debug("Data synch is done!!!")
+ 
+            # beep three times and shutdown the host           
+            self.beep()
+            time.sleep(0.2)
+            self.beep()
+            time.sleep(0.2)
+            self.beep()
+            time.sleep(0.2)
+            self.beep()
             
-            self.beep()
-            time.sleep(0.5)
-            self.beep()
-            logging.debug("Exiting")
-            time.sleep(10.0)
+            time.sleep(5.0)
+            logging.debug("Shutdown started.")
             self.shell.shutdown()
             
-            return True
-            
             break
-        
-#        return True
-    
-        # try to restore RPI
-        epoch = self.shell.get_system_time_epoch()            
-        if self.send_message('time_synch:{:d}'.format(epoch)):
-            logging.debug("Restore: time is synchronized - OK")
-        else:
-            logging.debug("Restore time is synchronized - FAILED")
-        
-        time.sleep(2.0)
-        if self.send_message('disable_maint'):
-            logging.debug("Restore: maint disabled - OK")
-        else:
-            logging.debug("Restore: maint disabled - FAILED")
-        
-        self.socket.close()
-        logging.debug("Conncetion closed")
-        logging.debug("Exiting")
-        
-        return False
-            
-            
-
-                
-    
