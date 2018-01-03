@@ -735,7 +735,8 @@ class Comminicator(MyThread, threading.Thread):
                     logging.debug("Got msg from USB: "+ answ)
                 else:
                     answ = self.read_tcp_data()
-                    answ = answ.translate(None, chr(10)+chr(13))
+                    if answ is not None:
+                        answ = answ.translate(None, chr(10)+chr(13))
                     logging.debug("Got msg from TCP/IP client: "+ answ)
                     
                 if answ == ack_msg:
@@ -781,6 +782,7 @@ class Comminicator(MyThread, threading.Thread):
                 self.time_synchronized = False
             
                 # pause threads on the rpi
+                    
                 for sense_thread in self.sense_threads:
                     sense_thread.m_pause(sense_thread.getName())
                     while not sense_thread.m_paused():
@@ -801,13 +803,21 @@ class Comminicator(MyThread, threading.Thread):
                     self.rpi_maint_mode = False
                     
                     # resume all paused threads
+                    print "Create buffer folder"
+                    if self.storage.dump_path is None:
+                        self.storage.buffer.check_last_dir()
+#                        self.storage.dump_path = self.buffer.check_last_dir()                    
+
+                    print "Threads started"
                     for sense_thread in self.sense_threads:
 
                         for t in threading.enumerate():
                             if t.getName() == sense_thread.getName():
-                               t.m_reset_pause(t.getName())
-                               time.sleep(0.5)
-                             
+                                if t.getName() == 'rpiCamera':
+                                    sense_thread.set_dump_dir(join(self.storage.buffer.dump_path, 'images'))
+                                t.m_reset_pause(t.getName())
+                                time.sleep(0.5)
+                    print "Threads start finished"        
                     
                     return True
                 return False
@@ -880,6 +890,9 @@ class Comminicator(MyThread, threading.Thread):
         
         t1 = time.time()
         time_synchronized_asked = False
+        self.storage.dump_path = None
+        
+        
         
         while True:
             # read USB data
@@ -930,13 +943,20 @@ class Comminicator(MyThread, threading.Thread):
                     self.set_current_time(long(usb_line[10:]))
                     if self.rpi_maint_mode:
                         # resume all paused threads
+                    
+                        if self.storage.dump_path is None:
+                            self.storage.buffer.check_last_dir()
+                            
                         for sense_thread in self.sense_threads:
                             for t in threading.enumerate():
                                 if t.getName() == sense_thread.getName():
-                                   t.m_reset_pause(t.getName()) # run thread
-                                   time.sleep(0.5)
+                                    if t.getName() == 'rpiCamera':
+                                        sense_thread.set_dump_dir(join(self.storage.buffer.dump_path, 'images'))
+                                    t.m_reset_pause(t.getName()) # run thread
+                                    time.sleep(0.5)
                         self.rpi_maint_mode = False
                         self.ardu_maint_mode = False
+                        
                     
             
             # read TCP data
@@ -972,10 +992,10 @@ class Comminicator(MyThread, threading.Thread):
                     if tcp_data == 'clean_rpi':
                         self.set_user_activity()
                         res = self.clear_rpi()
-                        if res:
-                            self.send_message('done', usb_type=False, ack_need=False)
-                        else:
-                            self.send_message('ack', usb_type=False, ack_need=False)
+#                        if res:
+                        self.send_message('done', usb_type=False, ack_need=False)
+#                        else:
+#                            self.send_message('ack', usb_type=False, ack_need=False)
                         
                     # get available space on rpi SD
                     if tcp_data == 'memory':
@@ -1085,9 +1105,9 @@ class Comminicator(MyThread, threading.Thread):
         logging.debug("Starting")
         
 
-        while True:
+#        while True:
 
-            self.get_messages()
+        self.get_messages()
             
         self.serial.close()
         if self.conn is not None:
@@ -1115,7 +1135,7 @@ class MyBuffer(object):
         self.lock = threading.Lock()
         self.file_counter = 0
         self.root_path = root_path
-        self.dump_path = self.check_last_dir()
+        self.dump_path = None
         
     
     def get_current_dump_dir(self):
@@ -1151,6 +1171,8 @@ class MyBuffer(object):
         # set permissions
         new_mode = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
         os.chmod(dir_path, new_mode)
+        
+        self.dump_path = dir_path
             
         return dir_path
         
@@ -1189,15 +1211,19 @@ class Camera_capture(MyThread, threading.Thread):
         self.storage = storage_thread
         logging.debug("Camera thread initialized")
         self.paused = False
+    
+    def set_dump_dir(self, path):
+        self.path_to_save = path
+        if not exists(self.path_to_save):
+            makedirs(self.path_to_save)
+            new_mode = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
+            os.chmod(self.path_to_save, new_mode)
         
 
     def run(self):
         # enter point in the Thread
         
-        if not exists(self.path_to_save):
-            makedirs(self.path_to_save)
-            new_mode = stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO
-            os.chmod(self.path_to_save, new_mode)
+        
     
         if self.m_paused():
             logging.debug("Starting in paused mode")
@@ -1245,7 +1271,7 @@ class Data_storage(object):
     def __init__(self, path_root, index=''):
         super(Data_storage, self).__init__()
         self.buffer = MyBuffer(path_root, index)
-        self.dump_path = self.buffer.get_current_dump_dir()
+#        self.dump_path = None # self.buffer.get_current_dump_dir()
     
     def push_data(self, data):
         # push data dictionary in the buffer
@@ -1258,13 +1284,14 @@ class Data_storage(object):
         all_items = [item for item in listdir(self.buffer.root_path)]
         logging.debug("Deleting all files in the {:s}".format(self.buffer.root_path))
         time.sleep(1.0)
+#        self.dump_path = None
         try:
             for item_ in all_items:
                 # delete item
                 full_path = join(self.buffer.root_path, item_)
                 
-                if self.dump_path == full_path:
-                    continue
+#                if self.dump_path == full_path:
+#                    continue
                 
 #                logging.debug("Deleting " + full_path)
                 if isdir(full_path):
@@ -1334,7 +1361,7 @@ class Calendar(object):
     def get_datetime_str(self, datetime_obj):
         # returns formated date time string
     
-        return datetime_obj.strftime('%d.%m.%Y%H:%M')
+        return datetime_obj.strftime('%d.%m.%Y %H:%M')
 
     def get_nearest_up_time(self):
         
@@ -1504,16 +1531,28 @@ class HostPC(threading.Thread):
             bytes_ = self.socket.send(message + '\n')
             logging.debug("Sent the msg to the rpi and wait for the ack: " + message)
             
-            if ack_need:
+            if ack_need and ack_msg == 'ack':
                 time.sleep(0.1)
                 answ = self.read_tcp_data()
-                
-                answ = answ.translate(None, chr(10)+chr(13))
+                if answ is not None:
+                    answ = answ.translate(None, chr(10)+chr(13))
                 if answ == ack_msg:
                     logging.debug("Message sent successfully, got ack.")
                     return True
                 else:
                     logging.debug("Something wrong with communication: " + str(answ))
+            elif ack_need:
+                t2 = time.time()
+                while time.time() - t2 <= 60 * 5:
+                    answ = self.read_tcp_data()
+                    if answ is not None:
+                        answ = answ.translate(None, chr(10)+chr(13))
+                    if answ == ack_msg:
+                        logging.debug("Message sent successfully, got {:s}.".format(answ))
+                        return True
+                    time.sleep(1.0)
+                logging.debug("Communication timeout.")
+                return False
             else:
                 if bytes_ == len(message) + 1:
                     logging.debug("Message sent successfully.")
@@ -1565,12 +1604,19 @@ class HostPC(threading.Thread):
             try:  
                 self.socket.connect((self.rpi_ip, self.port))
 
+
             except sc.error as e1:
                 continue
             
             logging.debug('Connected to the rpi!')
             
             time.sleep(1.0)
+            
+            # pull tcp data
+            t1 = time.time()
+            while (time.time() - t1) <= 10.0:
+                _ = self.read_tcp_data()
+                time.sleep(1.0)
 
             # enable maintenance mode 
             if self.send_message('enable_maint'):
@@ -1585,7 +1631,7 @@ class HostPC(threading.Thread):
             
             # created new dump dir                 
             to_path = self.check_last_dir()
-            logging.debug("Created new directory for file copy: ", to_path);
+            logging.debug("Created new directory for data dumping. ");
 
             # copy all dump files from the rpi
             if self.get_data_from_rpi(to_path, files='/home/pi/sources/data/*.*'):
@@ -1593,7 +1639,8 @@ class HostPC(threading.Thread):
             else:
                 logging.debug("All files were coppied from the rpi - FAILED")
                 logging.debug("Restarting data copying and time synch...")
-                continue
+#                self.socket.close()
+#                continue
                     
             time.sleep(1.0)
             
@@ -1603,7 +1650,8 @@ class HostPC(threading.Thread):
             else:
                 logging.debug("The rpi cleaned up - FAILED")
                 logging.debug("Restarting data copying and time synch...")
-                continue
+#                self.socket.close()
+#                continue
             
             time.sleep(1.0)
             
@@ -1625,6 +1673,7 @@ class HostPC(threading.Thread):
             else:
                 logging.debug("Send time epoch - FAILED")
                 logging.debug("Restarting data copying and time synch...")
+#                self.socket.close()
                 continue
             
             time.sleep(1.0)            
@@ -1644,6 +1693,7 @@ class HostPC(threading.Thread):
             else:
                 logging.debug("Maintenance mode was disabled for the rpi and ardu - FAILED")
                 logging.debug("Restarting data copying and time synch...")
+#                self.socket.close()
                 continue
             
             if self.send_message('logout', ack_need=False):
@@ -1663,8 +1713,8 @@ class HostPC(threading.Thread):
             time.sleep(0.2)
             self.beep()
             
-            time.sleep(5.0)
-            logging.debug("Shutdown started.")
-            self.shell.shutdown()
+#            time.sleep(5.0)
+            #logging.debug("Shutdown started.")
+            #self.shell.shutdown()
             
             break
